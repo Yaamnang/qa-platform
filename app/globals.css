@@ -1,26 +1,71 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* Design tokens. Every page uses these through Tailwind classes
+   (bg-brand-600, text-ink-500, shadow-card, ...). */
+@theme {
+  --color-brand-50: #f4f2ff;
+  --color-brand-100: #ebe7ff;
+  --color-brand-200: #d8d0ff;
+  --color-brand-300: #b9aaff;
+  --color-brand-400: #957bfd;
+  --color-brand-500: #7653f6;
+  --color-brand-600: #6336eb;
+  --color-brand-700: #5328cf;
+  --color-brand-800: #4522a8;
+  --color-brand-900: #3a2087;
+  --color-brand-950: #22105c;
+  --color-brand: var(--color-brand-600);
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-ink-50: #f8f9fb;
+  --color-ink-100: #f1f3f7;
+  --color-ink-200: #e3e7ee;
+  --color-ink-300: #cbd2de;
+  --color-ink-400: #98a2b5;
+  --color-ink-500: #677085;
+  --color-ink-600: #4b5366;
+  --color-ink-700: #363c4c;
+  --color-ink-800: #222733;
+  --color-ink-900: #141821;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+
+  --shadow-card: 0 1px 2px rgb(20 24 33 / 0.04), 0 1px 3px rgb(20 24 33 / 0.06);
+  --shadow-pop: 0 12px 32px -8px rgb(20 24 33 / 0.18), 0 4px 8px -4px rgb(20 24 33 / 0.08);
+
+  --animate-fade-in: fade-in 160ms ease-out;
+  --animate-pop-in: pop-in 180ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: translateY(6px) scale(0.98); }
+    to { opacity: 1; transform: none; }
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-ink-50);
+  color: var(--color-ink-900);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+}
+
+::selection {
+  background: var(--color-brand-200);
+}
+
+/* Subtle dotted texture for the brand panel on sign-in pages. */
+.bg-dots {
+  background-image: radial-gradient(rgb(255 255 255 / 0.12) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

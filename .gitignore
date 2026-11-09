@@ -39,3 +39,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# QA system
+/qa-results/
+/qa/.auth/
+/qa/.ai-cache/
+/.ai-cache/
+/test-results/
+/playwright-report/
+!.env.example
+
+# explorer drafts from local runs
+/qa/drafts/

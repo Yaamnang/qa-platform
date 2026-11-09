@@ -1,0 +1,37 @@
+# 1) Every code change: full suite against a fresh stand-in built from the PR.
+#    AI is mocked (deterministic, free). A failure blocks the merge.
+name: QA · every change
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: qa-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run typecheck && npm run lint
+      - name: Run QA (one command)
+        run: npm run qa
+        env:
+          CI: "1"
+      - name: Report in the job summary
+        if: always()
+        run: cat qa-results/latest/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep evidence (synthetic data only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-results
+          path: qa-results/latest/
+          retention-days: 14

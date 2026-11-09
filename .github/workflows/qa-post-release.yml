@@ -1,0 +1,51 @@
+# 2) After every release: the same suite against the freshly deployed staging
+#    (or a canary slice of production), signed in as the staging QA bot.
+#    AI runs for real but through the platform's record/replay gateway.
+name: QA · after release
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "URL to test"
+        required: true
+
+concurrency:
+  group: qa-post-release   # one bot account -> never two runs at once
+  cancel-in-progress: false
+
+jobs:
+  qa:
+    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && npx playwright install --with-deps chromium
+      - name: Run QA against the deployment
+        run: npm run qa -- --base-url "$BASE_URL"
+        env:
+          CI: "1"
+          BASE_URL: ${{ inputs.base_url || github.event.deployment_status.environment_url }}
+          QA_TARGET: staging
+          QA_RETRIES: "1"                       # pass-on-retry is reported as flaky, not failed
+          QA_ALLOWED_HOSTS: ${{ vars.QA_ALLOWED_HOSTS }}
+          QA_EMAIL: ${{ secrets.QA_STAGING_EMAIL }}
+          QA_PASSWORD: ${{ secrets.QA_STAGING_PASSWORD }}
+          QA_TOTP_SECRET: ${{ secrets.QA_STAGING_TOTP_SECRET }}
+          QA_VIEWER_EMAIL: ${{ secrets.QA_STAGING_VIEWER_EMAIL }}          # optional: read-only account for the role tests
+          QA_VIEWER_PASSWORD: ${{ secrets.QA_STAGING_VIEWER_PASSWORD }}
+          QA_VIEWER_TOTP_SECRET: ${{ secrets.QA_STAGING_VIEWER_TOTP_SECRET }}
+          QA_TRIAGE: claude                     # advisory explanations in the report
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      - if: always()
+        run: cat qa-results/latest/report.md >> "$GITHUB_STEP_SUMMARY"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-results-staging
+          path: qa-results/latest/
+          retention-days: 14

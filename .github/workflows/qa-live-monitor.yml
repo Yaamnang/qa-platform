@@ -1,0 +1,68 @@
+# 3) Regularly on the live platform: only @live-safe journeys, only inside the
+#    synthetic QA tenant. The costly AI-job journey runs 4x a day, the rest
+#    every 30 minutes. Pages a human only on a confirmed problem.
+name: QA · live monitor
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # live-safe journeys
+    - cron: "15 */6 * * *"   # + one real AI job (cost-capped)
+  workflow_dispatch:
+
+concurrency:
+  group: qa-live            # one bot account -> runs never overlap
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production-monitor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci && npx playwright install --with-deps chromium
+      - name: Run live-safe QA
+        id: qa
+        continue-on-error: true
+        run: npm run qa -- --base-url "${{ vars.PROD_URL }}" --grep "$GREP"
+        env:
+          GREP: ${{ github.event.schedule == '15 */6 * * *' && '@live-safe|@costly' || '@live-safe' }}
+          QA_TARGET: live
+          QA_ALLOW_LIVE: "1"
+          QA_RETRIES: "1"
+          QA_ALLOWED_HOSTS: ${{ vars.PROD_HOST }}
+          QA_EMAIL: ${{ secrets.QA_PROD_EMAIL }}
+          QA_PASSWORD: ${{ secrets.QA_PROD_PASSWORD }}
+          QA_TOTP_SECRET: ${{ secrets.QA_PROD_TOTP_SECRET }}
+          QA_VIEWER_EMAIL: ${{ secrets.QA_PROD_VIEWER_EMAIL }}          # optional: read-only account for the role tests
+          QA_VIEWER_PASSWORD: ${{ secrets.QA_PROD_VIEWER_PASSWORD }}
+          QA_VIEWER_TOTP_SECRET: ${{ secrets.QA_PROD_VIEWER_TOTP_SECRET }}
+      - name: Decide whether to page someone
+        if: steps.qa.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SLACK_WEBHOOK: ${{ secrets.QA_ALERT_WEBHOOK }}
+        run: |
+          verdict=$(jq -r .verdict qa-results/latest/summary.json 2>/dev/null || echo "RUNNER ERROR")
+          critical=$(jq '[.problems[] | select(.severity=="critical")] | length' qa-results/latest/summary.json 2>/dev/null || echo 0)
+          previous=$(gh run list --workflow qa-live-monitor.yml --status completed --limit 1 --json conclusion -q '.[0].conclusion')
+          # Critical (data leak / safety) pages immediately. Anything else must fail twice in a row.
+          if [ "$critical" -gt 0 ] || [ "$previous" = "failure" ]; then
+            headline=$(jq -r '.problems[0].headline // .globalErrors[0] // "QA run failed"' qa-results/latest/summary.json)
+            curl -sf -X POST -H 'content-type: application/json' \
+              -d "{\"text\":\"Live QA ${verdict}: ${headline} <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|report>\"}" \
+              "$SLACK_WEBHOOK"
+          else
+            echo "First failure: not paging yet; the next run confirms or clears it."
+          fi
+          exit 1
+      - name: Keep the text report only (no screenshots/traces from production)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-live-report
+          path: |
+            qa-results/latest/report.md
+            qa-results/latest/summary.json
+          retention-days: 7

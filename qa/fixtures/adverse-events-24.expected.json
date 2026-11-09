@@ -1,0 +1,9 @@
+{
+  "_comment": "Hand-checked facts for adverse-events-24.csv. Synthetic data, no real patients. The AI report must agree with every value.",
+  "total_events": 24,
+  "unique_subjects": 20,
+  "events_treatment": 15,
+  "events_placebo": 9,
+  "severe_events": 3,
+  "most_common_event": { "value": "headache", "count": 8 }
+}

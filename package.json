@@ -6,21 +6,41 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "qa": "tsx qa/run.ts",
+    "explore": "tsx --env-file-if-exists=.env --env-file-if-exists=.env.local qa/explore/run.ts",
+    "qa:stability": "npm run qa:repeat",
+    "qa:bugs": "tsx qa/run.ts --bug-matrix",
+    "qa:report": "playwright show-report qa-results/latest/html",
+    "otp": "tsx scripts/otp.ts",
+    "qa:repeat": "tsx qa/run.ts --repeat 10",
+    "db:seed": "tsx --conditions=react-server --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed-supabase.ts",
+    "admin": "tsx --conditions=react-server scripts/admin.ts",
+    "demo": "tsx scripts/console-demo.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
+    "@supabase/supabase-js": "^2.119.0",
     "next": "16.4.5",
+    "qrcode": "^1.5.4",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "server-only": "^0.0.1",
+    "three": "^0.187.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
