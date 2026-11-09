@@ -117,6 +117,7 @@ export function toJobDto(job: JobRecord): Job & JobOrigin {
     approvedProposalIds: job.approvedProposalIds,
     explorer: job.explorer ?? null,
     messages: job.messages ?? [],
+    summary: job.summary ?? null,
     result: job.result,
     error: job.error,
     trigger: job.trigger,

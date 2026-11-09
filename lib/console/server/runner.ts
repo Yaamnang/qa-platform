@@ -8,7 +8,10 @@ import type { ExplorerSummary, Proposal as ExplorerProposal } from "@/qa/explore
 import type { Summary } from "@/qa/reporter/plain-report";
 import type { Job, JobKind, JobOrigin, Proposal } from "../contract";
 import { closeLink, openLink, waitedMs } from "./chat";
+import { dropFrame } from "./live-frames";
+import { summarize } from "./summary";
 import { decryptSecret } from "./encryption";
+import { probeChildEnv, probeExtras, saveRecordedPlan } from "./probe";
 import { hostOf } from "./projects";
 import { MANUAL_ORIGIN, type JobPatch, type JobRecord, type ProjectRecord } from "./records";
 import { createJob, listUnfinishedJobs, updateJob } from "./store";
@@ -47,7 +50,8 @@ const ROOT = process.cwd();
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const SCRIPT: Record<JobKind, string> = {
   explore: path.join("qa", "explore", "run.ts"),
-  qa: path.join("qa", "run.ts"),
+  // Picks the built-in suite (qa/run.ts) for the stand-in and the AI Probe for any other site.
+  qa: path.join("qa", "probe", "run.ts"),
 };
 
 /**
@@ -87,8 +91,9 @@ const NOT_INHERITED = /^(CONSOLE_|SEED_|SUPABASE_|QA_)/;
  * above. With the key it can let Claude drive the read-only browser
  * (qa/explore/agent.ts); without it, it uses its built-in rules. EXPLORE_MAX_TOKENS
  * is a number, not a secret, but its name contains TOKEN, so it would be
- * stripped too. The Probe child never gets any of them: no model has a say in
- * whether a run passes.
+ * stripped too. The Probe child gets the key only to plan the AI Probe
+ * (probe.ts probeChildEnv); it is stripped again before the built-in suite
+ * starts, and no model has a say in whether a run passes.
  */
 const EXPLORE_PASSTHROUGH = ["ANTHROPIC_API_KEY", "EXPLORE_MODEL", "EXPLORE_MAX_STEPS", "EXPLORE_MAX_TOKENS"] as const;
 
@@ -361,9 +366,11 @@ async function launch(
   const token = openLink(job.id, write, secrets);
   const link: Link = { url: `${callbackBase}/api/console/jobs/${job.id}/agent`, token };
 
+  // Probe only: the recorded plan, where to record a new one, whether writes are allowed, the model key (lib/console/server/probe.ts).
+  const probeEnv = kind === "qa" ? await probeChildEnv(project, dir) : {};
   const child = spawn(process.execPath, args, {
     cwd: ROOT,
-    env: childEnv(kind, credentials, hostOf(project.targetUrl), link),
+    env: { ...childEnv(kind, credentials, hostOf(project.targetUrl), link), ...probeEnv },
     stdio: ["ignore", "pipe", "pipe"],
     shell: false, // the default, written out so nobody "simplifies" it into a shell string later
     windowsHide: true,
@@ -431,6 +438,8 @@ async function launch(
 
     // Closing the chat first means nothing it does later can reach the store.
     const messages = closeLink(job.id);
+    // The live view's last frame goes with it: frames live only while the job runs.
+    dropFrame(job.id);
     // The explorer summary and the chat go in writes of their own, after the
     // result. On a Supabase database that has not had the newer columns added
     // (db/schema-console.sql), only those writes fail, and the result is kept.
@@ -441,7 +450,25 @@ async function launch(
       if (state.active === slot) state.active = null;
     });
     if (explorer !== undefined) void write({ explorer });
+    if (kind === "qa") void saveRecordedPlan(project.id, dir);
     if (messages) void write({ messages });
+    // Last, in a write of its own: it can take up to 10 s, and it is advisory only.
+    void summarize(
+      {
+        kind,
+        status: outcome.status ?? "error",
+        result: outcome.result,
+        proposals: outcome.proposals,
+        explorer,
+        error: outcome.error,
+        durationMs: Date.now() - startedAt,
+        logLines: [...lines],
+        messages: messages ?? [],
+      },
+      clean,
+    )
+      .then((summary) => write({ summary }))
+      .catch(() => undefined);
   };
 
   child.on("error", (err) => {
@@ -626,6 +653,7 @@ function toResult(summary: Summary, clean: (text: string) => string): NonNullabl
       tests: p.tests.map(clean),
     })),
     runId: summary.runId ?? null,
+    ...probeExtras(summary, clean),
   };
 }
 

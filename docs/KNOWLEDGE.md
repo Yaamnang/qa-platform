@@ -79,6 +79,12 @@ encrypted with a key made from that token, deleted at teardown. "Remember for th
 workspace" stores them with the same AES-256-GCM encryption as the workspace form.
 `lib/console/server/chat.ts`, `qa/lib/console-link.ts`.
 
+**What stops the console's live view of the QA browser from leaking something?**
+Password and one-time-code inputs are masked in the browser before the screenshot is taken, the server keeps only the latest frame per job in memory and drops it when the job ends (never on disk or in the database), and frames are only sent when a run was started from the console, so CI and `npm run qa` send nothing. `qa/lib/live-view.ts`, `lib/console/server/live-frames.ts`.
+
+**Can the job summary change a verdict or leak a secret?**
+No. It is advisory text shown above the result, which still comes from the run itself, and it is built only from text that is already redacted: counts, problem headlines, the stored log tail and the chat transcript. `lib/console/server/summary.ts`.
+
 ## Reliability and false alarms
 
 **How do you get identical results ten runs in a row?**
@@ -138,13 +144,42 @@ obeying. It can only pick from a menu that `qa/explore/agent.ts` checks
 against the page: open a same-origin path, click a listed link, tab, menu or
 non-submit button, or stop. It cannot type or submit a form. Underneath, the
 read-only guard in `qa/explore/readonly.ts` aborts every request that is not a
-GET inside the browser, apart from the three sign-in calls. A steered model can
-waste steps. It cannot send a write.
+GET inside the browser, apart from signing in. A steered model can waste
+steps. It cannot send a write.
+
+**Why does Explore let the sign-in request through, and nothing else?**
+Signing in is a POST, so a guard that blocks every non-GET would also block
+the login, and the explorer could never see past a sign-in screen. On a site
+we do not own we cannot list its login endpoints in advance, so the exception
+is a window in time instead of a list. The sign-in code in
+`qa/explore/crawl.ts` opens it immediately before it submits the login or code
+form, and it closes once the page settles, or after 15 seconds at most. While
+it is open, non-GET requests to the target's own origin go through, plus the
+identity provider's host when the form posts to another origin. Everything
+else stays blocked, and every request the window lets out is logged as
+"allowed for sign-in: METHOD path". It is safe because the explorer chooses
+when the window opens: only its own sign-in code opens it, the model has no
+type or submit action, and a login form only proves who we are. Outside that
+one moment the guard is exactly as strict as before. `qa/explore/readonly.ts`.
 
 **What does "checks that what they report is true" mean in practice?**
 A job can finish, show a green tick, and be wrong. The `report-wrong-count` bug
 makes the job report one more event than exists. A suite that only checked the job
 finished would pass it. This one fails it.
+
+**How can the Probe test a site we have never seen without a model deciding pass or fail?**
+On our own stand-in the Probe is the built-in suite, unchanged. On any other site
+it is the AI Probe (`qa/probe/`). The first run opens the site as a visitor, looks
+at a few pages and asks Claude Haiku, through one forced tool call, for 3 to 6
+short journeys. Each step is one action (navigate, click, fill, select, upload,
+download) plus the outcome that proves it worked. Playwright runs every step and
+checks that outcome with a timeout; a click after which nothing changed at all is
+reported as "Button did nothing". The model only plans. Verdicts come from those
+checks alone. The journeys as run are saved on the workspace, and every later
+Probe replays them with no model call, so results repeat and cost nothing until
+someone presses Re-plan. Off the allow-list the Probe runs behind the read-only
+guard: a step whose write gets blocked is skipped, not failed, while downloads and
+navigation, both GETs, are still checked.
 
 ## Architecture
 

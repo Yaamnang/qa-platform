@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test as base, expect, type Page, type Route, type TestInfo } from "@playwright/test";
 import { config, QA_PREFIX, ROOT } from "./config";
+import { attachLiveView, liveAction } from "./live-view";
 
 /**
  * Every test runs inside a "guard" that:
@@ -63,7 +64,7 @@ export function fixture(name: string): Buffer {
   return readFileSync(path.join(ROOT, "qa", "fixtures", name));
 }
 
-export const test = base.extend<{ guard: Guard; qaApi: QaApi }>({
+export const test = base.extend<{ guard: Guard; qaApi: QaApi; liveView: void }>({
   guard: [
     async ({ context, page }, use, testInfo) => {
       const g: Guard = { createdDocIds: new Set(), createdInviteIds: new Set(), violations: [], consoleErrors: [] };
@@ -169,6 +170,19 @@ export const test = base.extend<{ guard: Guard; qaApi: QaApi }>({
       if (g.violations.length && testInfo.status === testInfo.expectedStatus) {
         throw new Error(g.violations.join("\n"));
       }
+    },
+    { auto: true },
+  ],
+
+  // The console's live view of this test's browser (qa/lib/live-view.ts). Does
+  // nothing unless the run was started from the console. The caption starts
+  // as the journey's name; the helpers in ui.ts name each step after that.
+  liveView: [
+    async ({ page }, use, testInfo) => {
+      const stop = attachLiveView(page);
+      await liveAction(page, testInfo.titlePath.slice(1).join(" \u203a ") || testInfo.title);
+      await use();
+      stop();
     },
     { auto: true },
   ],

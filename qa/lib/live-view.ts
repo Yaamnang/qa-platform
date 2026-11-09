@@ -73,8 +73,15 @@ function maskOf(page: Page) {
   ];
 }
 
+/** A screenshot taken mid-navigation or as the page closes fails; that is normal and not worth a log line. */
+class SkippedFrame extends Error {}
+
 async function shoot(page: Page, quality: number): Promise<Buffer> {
-  return page.screenshot({ type: "jpeg", quality, scale: "css", mask: maskOf(page), timeout: SCREENSHOT_TIMEOUT_MS });
+  return page
+    .screenshot({ type: "jpeg", quality, scale: "css", mask: maskOf(page), timeout: SCREENSHOT_TIMEOUT_MS })
+    .catch((err: unknown) => {
+      throw new SkippedFrame(err instanceof Error ? err.message : String(err));
+    });
 }
 
 async function viewportOf(page: Page): Promise<{ width: number; height: number }> {
@@ -86,7 +93,7 @@ async function viewportOf(page: Page): Promise<{ width: number; height: number }
 async function sendFrame(page: Page, state: LiveState): Promise<void> {
   let bytes = await shoot(page, 55);
   if (bytes.byteLength > MAX_FRAME_BYTES) bytes = await shoot(page, 30);
-  if (bytes.byteLength > MAX_FRAME_BYTES) throw new Error(`frame of ${bytes.byteLength} bytes is over the limit`);
+  if (bytes.byteLength > MAX_FRAME_BYTES) throw new SkippedFrame("frame over the size limit");
   if (state.stopped) return;
 
   const box = state.box && Date.now() - state.boxAt < BOX_TTL_MS ? state.box : null;
@@ -136,7 +143,7 @@ export function attachLiveView(page: Page): () => void {
     state.again = false;
     sendFrame(page, state)
       .catch((err: unknown) => {
-        if (!state.stopped && !page.isClosed()) logOnce(err);
+        if (!(err instanceof SkippedFrame) && !state.stopped && !page.isClosed()) logOnce(err);
       })
       .finally(() => {
         state.sending = false;

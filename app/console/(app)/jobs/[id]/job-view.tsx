@@ -12,16 +12,22 @@ import { formatAgo, formatDuration, useNow } from "../../../_components/format";
 import { isActive, JOB_KIND_LABEL, JobStatusLabel } from "../../../_components/status";
 import { canRetry, InlineLoading, LoadError } from "../../../_components/states";
 import { JobChat } from "./chat";
+import { JobSummaryPanel, LivePanel, useLiveFrame } from "./live";
 import { Proposals } from "./proposals";
 import { QaResult } from "./qa-result";
+import { ProbeJourneys } from "./probe-journeys";
 
 const POLL_MS = 1500;
 const RETRY_MS = 3000;
+/** The summary is written a few seconds after the job ends, so a finished job is polled a little longer for it. */
+const SUMMARY_WAIT_MS = 20_000;
 
 /**
  * One job. While it is queued, running or waiting for an answer: status,
- * elapsed time, the log and the chat, polled every 1.5 s. Once it finishes, polling stops and the result shows:
- * the verdict and problems for a probe, the proposals for an explore job.
+ * elapsed time, the live view of the QA browser next to the chat, and the log,
+ * polled every 1.5 s. Once it finishes, polling stops (after the summary has
+ * arrived) and the result shows: the summary, then the verdict and problems for
+ * a probe or the proposals for an explore job. The last live frame stays, marked Finished.
  */
 export function JobView({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -44,7 +50,8 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
         loaded = true;
         setJob(r.job);
         setStale(false);
-        if (isActive(r.job.status)) timer = setTimeout(poll, POLL_MS);
+        const awaitingSummary = !r.job.summary && r.job.finishedAt !== null && Date.now() - r.job.finishedAt < SUMMARY_WAIT_MS;
+        if (isActive(r.job.status) || awaitingSummary) timer = setTimeout(poll, POLL_MS);
       } catch (err) {
         if (stopped) return;
         if (isSignedOut(err)) return router.replace("/console/login");
@@ -75,6 +82,7 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
 
   const active = job ? isActive(job.status) : false;
   const now = useNow(active ? 1000 : 30_000);
+  const live = useLiveFrame(id, active);
 
   const back = (
     <Link href={job ? `/console/projects/${job.projectId}/${job.kind === "qa" ? "probe" : "explore"}` : "/console"} data-testid="job-back"
@@ -138,11 +146,18 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
 
       {stale && <Notice kind="warning" className="mb-6" testId="job-stale">Lost contact with the server. Retrying.</Notice>}
 
+      {!active && job.summary && <JobSummaryPanel summary={job.summary} />}
+
       {active && (
-        <div className="mb-6 grid gap-6 lg:grid-cols-2">
-          <LogPanel text={job.logTail} />
-          <JobChat job={job} onChange={setJob} />
-        </div>
+        <>
+          <div className="mb-6 grid items-start gap-6 lg:grid-cols-2">
+            <LivePanel frame={live} finished={false} />
+            <JobChat job={job} onChange={setJob} />
+          </div>
+          <div className="mb-6">
+            <LogPanel text={job.logTail} />
+          </div>
+        </>
       )}
 
       {job.status === "error" && (
@@ -151,7 +166,7 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
 
       {finished && job.kind === "qa" && (
         job.result
-          ? <QaResult result={job.result} />
+          ? <><QaResult result={job.result} /><ProbeJourneys result={job.result} /></>
           : <Notice kind="warning" className="mb-6" testId="job-no-result">This run finished without a result. The log below shows how far it got.</Notice>
       )}
 
@@ -161,7 +176,14 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
 
       {finished && job.kind === "explore" && <Proposals job={job} onChange={setJob} />}
 
-      {!active && <JobChat job={job} onChange={setJob} className="mb-6" />}
+      {!active && (live.src ? (
+        <div className="mb-6 grid items-start gap-6 lg:grid-cols-2">
+          <LivePanel frame={live} finished />
+          <JobChat job={job} onChange={setJob} />
+        </div>
+      ) : (
+        <JobChat job={job} onChange={setJob} className="mb-6" />
+      ))}
 
       {!active && (
         <details open={job.status === "error"} className="overflow-hidden rounded-xl border border-ink-200 bg-white">

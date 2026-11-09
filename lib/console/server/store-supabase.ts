@@ -87,6 +87,7 @@ type JobRow = {
   // Added later with "add column if not exists", so older rows read as empty.
   explorer?: Job["explorer"];
   messages?: ChatMessage[] | null;
+  summary?: Job["summary"];
   error: string | null;
   runner_host: string;
   runner_pid: number | string;
@@ -160,6 +161,7 @@ function rowToJob(row: JobRow): JobRecord {
     result: row.result,
     explorer: row.explorer ?? null,
     messages: row.messages ?? [],
+    summary: row.summary ?? null,
     error: row.error,
     runnerHost: row.runner_host,
     runnerPid: Number(row.runner_pid),
@@ -452,9 +454,10 @@ async function updateJob(id: string, patch: JobPatch): Promise<void> {
   if (patch.approvedProposalIds !== undefined) row.approved_proposal_ids = patch.approvedProposalIds;
   if (patch.result !== undefined) row.result = patch.result;
   if (patch.error !== undefined) row.error = patch.error;
-  // Both columns come from the "add column if not exists" lines in db/schema-console.sql.
+  // These columns come from the "add column if not exists" lines in db/schema-console.sql.
   if (patch.explorer !== undefined) row.explorer = patch.explorer;
   if (patch.messages !== undefined) row.messages = patch.messages;
+  if (patch.summary !== undefined) row.summary = patch.summary;
   if (Object.keys(row).length === 0) return;
   const { error } = await client().from(JOBS).update(row).eq("id", id);
   assertOk(error, "job update");

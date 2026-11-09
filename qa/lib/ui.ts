@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { liveAction } from "./live-view";
 
 /**
  * User-level actions, written with the locators a person would use
@@ -8,24 +9,36 @@ import { expect, type Page } from "@playwright/test";
  */
 
 export async function submitPassword(page: Page, email: string, password: string) {
+  await liveAction(page, "Opening the sign-in page");
   await page.goto("/login");
-  await page.getByLabel("Email").fill(email);
+  const emailField = page.getByLabel("Email");
+  await liveAction(page, "Typing the email", emailField);
+  await emailField.fill(email);
   // exact: the eye button next to the field is labelled "Show password".
-  await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Continue" }).click();
+  const passwordField = page.getByLabel("Password", { exact: true });
+  await liveAction(page, "Typing the password", passwordField);
+  await passwordField.fill(password);
+  const continueButton = page.getByRole("button", { name: "Continue" });
+  await liveAction(page, "Clicking 'Continue'", continueButton);
+  await continueButton.click();
 }
 
 export async function submitCode(page: Page, code: string) {
   const codeField = page.getByLabel("Authentication code");
   await expect(codeField, "After a correct password, the sign-in page should ask for a one-time code").toBeVisible();
+  await liveAction(page, "Typing the one-time code", codeField);
   await codeField.fill(code);
-  await page.getByRole("button", { name: "Verify" }).click();
+  const verifyButton = page.getByRole("button", { name: "Verify" });
+  await liveAction(page, "Clicking 'Verify'", verifyButton);
+  await verifyButton.click();
 }
 
 /** After the code: the organization picker. The bot only ever opens its own synthetic organization. */
 export async function chooseOrganization(page: Page, name: string) {
   await expect(page, "After a valid one-time code the user should be asked to choose an organization").toHaveURL(/\/orgs$/);
-  await page.getByRole("button", { name: `Open ${name}`, exact: true }).click();
+  const openButton = page.getByRole("button", { name: `Open ${name}`, exact: true });
+  await liveAction(page, `Opening ${name}`, openButton);
+  await openButton.click();
 }
 
 export async function expectSignedInWorkspace(page: Page, tenantName: string) {
@@ -35,8 +48,12 @@ export async function expectSignedInWorkspace(page: Page, tenantName: string) {
 }
 
 export async function uploadThroughUi(page: Page, file: { name: string; mimeType: string; buffer: Buffer }) {
-  await page.getByLabel("CSV file").setInputFiles(file);
-  await page.getByRole("button", { name: "Upload" }).click();
+  const fileInput = page.getByLabel("CSV file");
+  await liveAction(page, `Choosing ${file.name}`, fileInput);
+  await fileInput.setInputFiles(file);
+  const uploadButton = page.getByRole("button", { name: "Upload" });
+  await liveAction(page, "Clicking 'Upload'", uploadButton);
+  await uploadButton.click();
 }
 
 export function documentRow(page: Page, name: string) {

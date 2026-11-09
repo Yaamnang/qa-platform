@@ -105,6 +105,10 @@ export type Job = {
     durationMs: number;
     problems: RunProblem[];
     runId: string | null;
+    /** AI Probe only: the per-journey breakdown. Absent for the built-in suite. */
+    journeys?: ProbeJourneyResult[];
+    /** AI Probe only: whether it planned with Claude or replayed the recorded plan, and what that cost. */
+    probe?: ProbeRunInfo | null;
   } | null;
   /** Human-readable reason when status is "error". */
   error: string | null;
@@ -115,7 +119,16 @@ export type Job = {
   explorer?: JobExplorer | null;
   /** The job's chat, oldest first. Empty for jobs from before the chat existed. */
   messages: ChatMessage[];
+  /**
+   * A short plain-English account of a finished job, built once when it ends
+   * (lib/console/server/summary.ts). Advisory only: it never changes the verdict.
+   * null while the job runs, and for jobs from before summaries existed.
+   */
+  summary: JobSummary | null;
 };
+
+/** by: "claude" when Claude Haiku wrote it, "template" when it was built from the facts without a model. */
+export type JobSummary = { text: string; by: "claude" | "template" };
 
 /** Mirrors ExplorerSummary in qa/explore/types.ts. */
 export type JobExplorer = {
@@ -243,6 +256,7 @@ export type GithubRepo = { fullName: string; private: boolean; defaultBranch: st
 //      headers: X-Live-Url, X-Live-Label (no secrets), X-Live-Box (JSON {x,y,width,height} in page pixels, optional),
 //               X-Live-Viewport (JSON {width,height})
 //      The server keeps only the latest frame per job, in memory, and drops it when the job ends.
+//      X-Live-Url and X-Live-Label are URI-encoded (encodeURIComponent). Frames over 600 KB get 413.
 // Read by the employee (session):
 // GET  /api/console/jobs/:id/frame       -> image/jpeg, Cache-Control: no-store; 204 when there is no frame yet
 // GET  /api/console/jobs/:id/frame/meta  -> { frame: LiveFrameMeta | null }
@@ -256,3 +270,44 @@ export type LiveFrameMeta = {
   box: { x: number; y: number; width: number; height: number } | null;
   viewport: { width: number; height: number };
 };
+
+// ---------------------------------------------------------------------------
+// AI Probe (added). Mirrors qa/probe/types.ts. A Probe on the stand-in runs the
+// built-in suite; on any other site it runs the AI Probe: Claude Haiku plans a
+// few journeys once, the plan is recorded on the workspace and replayed later
+// with no model call, and every verdict comes from deterministic checks.
+//
+// GET    /api/console/projects/:id/probe-plan  -> { probe: "builtin" | "ai", plan: ProbePlanInfo | null, hasKey: boolean }
+// DELETE /api/console/projects/:id/probe-plan  -> { plan: null }   "Re-plan": the next Probe plans again
+// ---------------------------------------------------------------------------
+
+export type ProbeStepResult = {
+  title: string;
+  action: string;
+  expect: string;
+  status: "passed" | "failed" | "skipped" | "not-run";
+  reason: string | null;
+  durationMs: number;
+};
+
+export type ProbeJourneyResult = {
+  name: string;
+  start: string;
+  outcome: "passed" | "failed" | "flaky" | "skipped";
+  headline: string | null;
+  failedStep: string | null;
+  steps: ProbeStepResult[];
+  durationMs: number;
+};
+
+export type ProbeRunInfo = {
+  mode: "planned" | "recorded";
+  model: string;
+  journeys: number;
+  steps: number;
+  tokens: { input: number; output: number };
+  approxCostUsd: number;
+  readOnly: boolean;
+};
+
+export type ProbePlanInfo = { journeys: string[]; steps: number; model: string; createdAt: string };

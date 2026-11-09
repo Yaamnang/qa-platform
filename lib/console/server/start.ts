@@ -1,7 +1,8 @@
 import "server-only";
 import type { JobKind, JobOrigin } from "../contract";
 import { ConsoleKeyError } from "./encryption";
-import { qaRunRefusal, toProjectDto } from "./projects";
+import { probeRefusal } from "./probe";
+import { toProjectDto } from "./projects";
 import { MANUAL_ORIGIN, type JobRecord, type ProjectRecord } from "./records";
 import { startJob } from "./runner";
 
@@ -34,12 +35,15 @@ export async function startProjectJob(
     };
   }
 
-  // The safety rule, checked before anything else can happen: a QA run
-  // writes and deletes data, so it only goes to a host someone listed on
-  // purpose. Explore is read-only and is allowed against any target.
+  // The safety rule, checked before anything else can happen. On the
+  // stand-in the Probe is the built-in suite, which writes and deletes data,
+  // so it only goes to a host someone listed on purpose. On any other site it
+  // is the AI Probe, read-only off the list, so it is allowed anywhere; it
+  // only needs a model key or a recorded plan (probe.ts). Explore is
+  // read-only and is allowed against any target.
   if (kind === "qa") {
-    const refusal = qaRunRefusal(project.targetUrl);
-    if (refusal) return { status: 403, error: refusal };
+    const refusal = await probeRefusal(project);
+    if (refusal) return refusal;
   }
 
   try {

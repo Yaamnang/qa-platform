@@ -96,7 +96,7 @@ export type GithubLinkPatch = Partial<Omit<GithubLinkRecord, "projectId">>;
 
 /** The fields a job may change after it is created. */
 export type JobPatch = Partial<
-  Pick<JobRecord, "status" | "startedAt" | "finishedAt" | "logTail" | "proposals" | "approvedProposalIds" | "result" | "error" | "explorer" | "messages">
+  Pick<JobRecord, "status" | "startedAt" | "finishedAt" | "logTail" | "proposals" | "approvedProposalIds" | "result" | "error" | "explorer" | "messages" | "summary">
 >;
 
 /** What a "Remember for this workspace" answer may change on a project. Only the fields passed are written. */
@@ -170,6 +170,7 @@ export function newJob(input: NewJob): JobRecord {
     result: null,
     error: null,
     messages: [],
+    summary: null,
     runnerHost: input.runnerHost,
     runnerPid: input.runnerPid,
     trigger: input.origin?.trigger ?? MANUAL_ORIGIN.trigger,

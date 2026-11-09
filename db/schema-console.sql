@@ -99,6 +99,12 @@ alter table console_jobs add column if not exists explorer jsonb;
 -- The job's chat, oldest first. Answers to login and code questions are never
 -- in here, only "Login provided" or "Code provided".
 alter table console_jobs add column if not exists messages jsonb not null default '[]'::jsonb;
+-- A finished job's plain-English summary ({ text, by }), advisory only.
+alter table console_jobs add column if not exists summary jsonb;
+-- The AI Probe's recorded plan for a workspace ({ version, origin, model, createdAt, journeys }).
+-- Written after a planning run and replayed with no model call; "Re-plan" sets it back to null.
+-- Steps hold locators, outcomes and fake test data only, never a secret.
+alter table console_projects add column if not exists probe_plan jsonb;
 -- 'waiting': the run asked the employee for a login or a code and is paused.
 -- The check is dropped and added again so this file stays safe to rerun.
 alter table console_jobs drop constraint if exists console_jobs_status_check;

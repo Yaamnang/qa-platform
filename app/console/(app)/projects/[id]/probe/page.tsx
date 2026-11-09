@@ -5,6 +5,7 @@ import { Button, EmptyState, Notice } from "@/components/ui";
 import { StatusDot } from "../../../../_components/status";
 import { JobHistory } from "../job-history";
 import { useStartJob, useWorkspace } from "../workspace";
+import { ProbePlanPanel } from "./probe-plan";
 
 export default function ProbePage() {
   const { project, jobs } = useWorkspace();
@@ -14,7 +15,7 @@ export default function ProbePage() {
   return (
     <>
       <div className="mb-6 flex flex-wrap items-center gap-x-6 gap-y-3">
-        <Button onClick={start} loading={starting} disabled={!project.qaRunAllowed}
+        <Button onClick={start} loading={starting}
           aria-describedby={project.qaRunAllowed ? undefined : "qa-run-blocked"} data-testid="job-start-qa">
           Probe
         </Button>
@@ -27,9 +28,11 @@ export default function ProbePage() {
       </div>
       {!project.qaRunAllowed && (
         <p id="qa-run-blocked" data-testid="qa-run-blocked" className="-mt-3 mb-6 text-xs text-ink-500">
-          Probes create and delete data, so they are only allowed on hosts on the allow-list.
+          This host is not on the allow-list, so the Probe is read-only here: steps that would change data are skipped. The built-in suite for the stand-in still needs the allow-list.
         </p>
       )}
+
+      <ProbePlanPanel projectId={project.id} version={history.map((j) => `${j.id}:${j.status}`).join(",")} />
 
       {error && <Notice kind="error" className="mb-6" testId="job-start-error">{error}</Notice>}
 

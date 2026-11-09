@@ -452,9 +452,9 @@ export type SignInGate = {
   maybeSignIn(page: Page): Promise<boolean>;
 };
 
-type GateContext = Pick<CrawlOptions, "origin" | "credentials" | "log"> & { guard: ReadOnlyGuard; notes: string[] };
+export type GateContext = Pick<CrawlOptions, "origin" | "credentials" | "log"> & { guard: ReadOnlyGuard; notes: string[] };
 
-function signInGate(context: GateContext): SignInGate {
+export function signInGate(context: GateContext): SignInGate {
   const { origin, credentials, log, guard, notes } = context;
   let attempted = false;
   let signedIn = false;
