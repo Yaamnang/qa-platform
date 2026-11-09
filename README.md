@@ -1,140 +1,101 @@
-# Eclypse automated QA (prototype)
+# Eclypse automated QA
 
-A QA system that uses a web platform like a real user, checks that every action really worked, follows long AI jobs to the end and verifies what they report, stays away from client data, and explains failures in plain language.
+A robot that tests a web platform the way a real user would: it signs in with a one-time code, clicks, fills in forms, uploads and downloads files, follows long AI jobs to the end, and checks that every step really worked. It stays away from client data and explains failures in plain English.
 
-| Path | What it is |
-|---|---|
-| `docs/DESIGN.pdf` | The design document (3 pages) |
-| `qa/` | The QA system: Playwright journeys, safety guard, AI output checks, plain-language reporter, the one-command runner, and the explorer |
-| `app/console/`, `lib/console/` | The QA console: the web app Eclypse engineers use to run QA |
-| `app/`, `lib/server/`, `components/` | The stand-in: a small copy of an AI platform for pharma teams, with switchable injected bugs. This is what the QA system tests in the prototype |
-| `results/` | Bug matrix, 10-run stability proof, sample reports |
-| `.github/workflows/` | When it runs: every change, after every release, on a schedule against live |
+The design document is [`docs/DESIGN.pdf`](docs/DESIGN.pdf).
 
-## 1. Run it: one command
+## What is in this repository
 
-Needs Node.js 20.9 or newer. The first run downloads Chromium (about 150 MB). No accounts, keys or database needed.
+There are two apps in one project.
+
+- **The QA console** (`/console`): what Eclypse engineers use. Add a website, press **Explore** or **Probe**, watch the robot's browser live, chat with it, read the result.
+- **The stand-in** (`/login`): a small copy of an AI platform for pharma teams. The robot practises on it. It has switches that break it on purpose, so you can see the robot catch real bugs.
+
+## Try it in two commands
+
+Needs Node.js 20.9 or newer. Nothing else: no accounts, keys or database.
 
 ```bash
 npm install
 npm run qa
 ```
 
-It builds the stand-in, starts it with credentials made up for this run, signs in with password plus one-time code, runs every user journey and prints the verdict:
+The robot builds the stand-in, signs in, runs 21 user journeys and prints the result:
 
 ```
- QA RESULT: PASS   22 passed, 0 failed, 0 flaky, 0 not run, about 60s
+ QA RESULT: PASS   22 passed, 0 failed, about 60s
  Report: qa-results/latest/report.md
 ```
 
-Exit codes: 0 pass, 1 fail, 2 environment unavailable or safety stop, 3 runner error.
-
-## 2. Prove it catches bugs and does not cry wolf
-
-```bash
-npm run qa:bugs      # every injected bug, one run each      -> results/bug-matrix.md
-npm run qa:repeat    # 10 runs with nothing changed           -> results/stability.md
-npm run qa -- --bugs report-wrong-count    # one run with one bug switched on
-npm run qa:report    # open the last run's HTML report with traces and screenshots
-```
-
-| Bug | What breaks |
-|---|---|
-| `otp-rejects-valid` | Sign-in refuses every valid code |
-| `upload-button-dead` | The Upload button does nothing |
-| `delete-wrong-doc` | Delete removes a different document |
-| `tenant-leak` | Another client's documents become visible |
-| `job-stuck` | The AI job hangs forever |
-| `report-wrong-count` | The AI report states a false number |
-| `download-mismatch` | The download differs from the screen |
-| `settings-not-saved` | "Saved" shows but nothing is saved |
-| `viewer-can-edit` | A read-only user can upload |
-| `results-page-crash` | The results page throws a JavaScript error |
-| `slow-documents` | A slow but working page. This one must PASS: it proves slowness does not raise an alarm |
-
-The tests never read this list. They find each problem through the UI, like a user would.
-
-## 3. Try the QA console
+To use the console instead:
 
 ```bash
 npm run demo
 ```
 
-It starts the console and prints everything you need:
+It prints an address, an email, a password and a sign-in code. Open the address, sign in, open the ready workspace and press **Probe**.
 
-- the address: `http://localhost:3000/console/login`
-- an employee email and a password made for this run
-- a QR code to scan with any authenticator app, plus a live six-digit code for anyone without a phone
-
-A workspace pointing at the stand-in is already there. Open it. The menu on the left has:
-
-- **Explore**: reads the site without changing anything and proposes checks for you to approve. With `ANTHROPIC_API_KEY` set it uses Claude Haiku to decide where to look; without one it uses built-in rules.
-- **Probe**: the real-user run. Signs in, uploads, runs the AI job, downloads, and ends on PASS or FAIL. No AI decides the verdict.
-- **GitHub**: watch a branch and run a Probe on every new commit (see section 5).
-
-Each job page has a chat beside the live log. The run posts what it is doing, and when it reaches the sign-in screen or the one-time code screen it asks you there and waits. The QA account fields on a new workspace can be left empty for that reason; tick "Remember for this workspace" when answering to save them encrypted. While Explore runs with Claude you can type where it should look next. GitHub-triggered runs have nobody to ask, so they still need saved credentials.
-
-Everything is in memory and gone when you press Ctrl+C. The demo refuses to start if `STORE=supabase` is set, so it never touches a database.
-
-## 4. Use a real database (Supabase)
-
-1. Create a Supabase project. In its SQL editor run `db/schema.sql`, then `db/schema-console.sql`. To start over later, run `db/drop-all.sql` first.
-2. In `.env` set `STORE=supabase`, `SUPABASE_URL` and `SUPABASE_SECRET_KEY` (the secret key, not the publishable one).
-3. Set up the QA account and yourself:
-
-   ```bash
-   npm run otp -- --init
-   npm run admin -- setup --email you@eclypse.ai --name "Your Name"
-   npm run dev
-   ```
-
-4. Open `http://localhost:3000/console/login`, sign in with the printed password and scan the QR code.
-
-Employees are managed from the terminal. Whoever can run these already holds the database key, so there is no separate admin login:
+## See it catch bugs
 
 ```bash
-npm run admin -- add    --email someone@eclypse.ai --name "Their Name"   # prints their password once
-npm run admin -- list
-npm run admin -- remove --email someone@eclypse.ai                       # also signs them out everywhere
+npm run qa:bugs      # breaks the stand-in 11 different ways, one run each
+npm run qa:repeat    # 10 runs with nothing changed: all must give the same result
 ```
 
-## 5. Run on every commit (GitHub)
+Results are saved in [`results/`](results/). One of the 11 is a page that is slow but working. The robot must pass it, which proves it does not raise false alarms.
 
-In a workspace, open **GitHub**:
+## The three buttons in a workspace
 
-1. Click **Create token on GitHub**. GitHub opens with the name and permission filled in. Generate it and copy it.
-2. Paste it into the console and save. It is stored encrypted and never shown again.
-3. Pick the repository and branch.
-
-The console checks the branch about once a minute. On a new commit it runs a Probe and marks the commit pass or fail with a link to the report. This works on repositories where you are only a collaborator, and on localhost, because the console asks GitHub rather than waiting for GitHub to call in.
-
-## 6. Settings
-
-All optional. See `.env.example` for the full list.
-
-| Variable | What it does |
+| Button | What it does |
 |---|---|
-| `STORE` | Empty: in memory. `supabase`: use the database |
-| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | The database, when `STORE=supabase` |
-| `CONSOLE_SECRET_KEY` | Encrypts saved QA passwords and GitHub tokens. Made automatically in memory mode, written by `admin setup` for Supabase |
-| `CONSOLE_QA_HOSTS` | Hosts a Probe may run against. Default: this machine only |
-| `CONSOLE_PUBLIC_URL` | The console's address, used in links on GitHub commits |
-| `ANTHROPIC_API_KEY` | Turns on Claude Haiku for Explore. Nothing else needs it |
-| `GITHUB_POLL_MS` | How often to check GitHub. Default one minute, 0 turns it off |
+| **Explore** | Walks the site like a visitor without changing anything, and suggests checks for you to approve. Uses Claude Haiku when `ANTHROPIC_API_KEY` is set. |
+| **Probe** | Uses the site like a real user and ends on PASS or FAIL. On our stand-in it runs the fixed test suite. On any other site, Claude plans the journeys once and later runs replay them without AI. |
+| **GitHub** | Watches a branch and runs a Probe on every new commit, then marks the commit pass or fail. |
 
-## 7. Test another deployment from the terminal
+When a run reaches a sign-in page, it asks for your login and code in the job chat. Your answers go straight to the browser, never to Claude. On sites that are not on your allow-list, nothing that saves or deletes is ever sent.
+
+## Use a real database (optional)
+
+1. Create a Supabase project. In its SQL editor run `db/schema.sql`, then `db/schema-console.sql`.
+2. In `.env` set `STORE=supabase`, `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
+3. Run:
 
 ```bash
-QA_EMAIL=... QA_PASSWORD=... QA_TOTP_SECRET=... QA_ALLOWED_HOSTS=staging.example.com \
-  npm run qa -- --target https://staging.example.com
+npm run otp -- --init
+npm run admin -- setup --email you@eclypse.ai --name "Your Name"
+npm run dev
 ```
 
-Live production also needs `QA_TARGET=live QA_ALLOW_LIVE=1` and `--grep @live-safe`, or the run refuses to start.
+4. Open `http://localhost:3000/console/login` and sign in with the password it printed.
+
+Add or remove engineers with `npm run admin -- add` / `list` / `remove`.
+
+## Put it on a server
+
+On an Ubuntu server: clone the repo, copy `.env.example` to `.env` and fill it in, then:
+
+```bash
+INSECURE_COOKIES=0 bash scripts/deploy.sh
+```
+
+For HTTPS without buying a domain, put Caddy in front with a `<your-ip>.nip.io` address.
+
+## Settings
+
+All optional. The full list is in `.env.example`.
+
+| Setting | What it does |
+|---|---|
+| `STORE` | Empty: keep data in memory. `supabase`: use the database. |
+| `ANTHROPIC_API_KEY` | Lets Claude Haiku drive Explore, plan Probes and write job summaries. |
+| `CONSOLE_QA_HOSTS` | Sites where a Probe may save and delete. Everything else is read-only. |
+| `CONSOLE_PUBLIC_URL` | The console's public address, used in links on GitHub commits. |
+| `CONSOLE_SECRET_KEY` | Encrypts saved logins and GitHub tokens. |
 
 ## Secrets
 
-None in the repository. Local runs make up fresh credentials each time, CI reads them from its secret store, and the console encrypts what it saves. `.env*` files, saved sessions, run output and AI caches are git-ignored. Reports are redacted, and the QA account is signed out at the end of every run.
+None are in this repository. Local runs make up fresh logins each time, saved logins are encrypted, reports are scrubbed of secrets, and `.env` files are never committed.
 
 ## Use of AI tools
 
-Built with Claude Code as a pair programmer for the stand-in, the QA system and the docs. I reviewed and ran everything locally, and the files in `results/` come from real runs. Claude is also part of the system in bounded roles: it can drive Explore and write plain-English failure notes, and it never decides pass or fail.
+Built with Claude Code as a pair programmer. I reviewed and ran the work locally, and `results/` comes from real runs. Claude is also part of the system: it can drive Explore, plan a Probe on a new site, and summarise jobs. It never decides pass or fail.
