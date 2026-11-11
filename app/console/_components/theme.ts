@@ -50,3 +50,49 @@ export const CONSOLE_THEME = {
   "--color-amber-200": "#5b4419",
   "--color-amber-900": "#fde68a",
 } as CSSProperties;
+
+/**
+ * Light colours for the sign-in panel (sign in, authenticator setup, code).
+ * It sits inside the dark console, so it sets every variable CONSOLE_THEME
+ * changes back to a light value. Same sky-blue accent, a shade darker than
+ * on dark, so white text on the main button stays readable.
+ */
+export const SIGN_IN_THEME = {
+  colorScheme: "light",
+
+  "--color-white": "#ffffff",
+  "--color-ink-50": "#f8f9fb",
+  "--color-ink-100": "#f1f3f7",
+  "--color-ink-200": "#e3e7ee",
+  "--color-ink-300": "#cbd2de",
+  "--color-ink-400": "#98a2b5",
+  "--color-ink-500": "#677085",
+  "--color-ink-600": "#4b5366",
+  "--color-ink-700": "#363c4c",
+  "--color-ink-800": "#222733",
+  "--color-ink-900": "#141821",
+
+  "--color-brand-50": "#f0f9ff",
+  "--color-brand-100": "#e0f2fe",
+  "--color-brand-200": "#bae6fd",
+  "--color-brand-300": "#7dd3fc",
+  "--color-brand-400": "#38bdf8",
+  "--color-brand-500": "#0284c7",
+  "--color-brand-600": "#0369a1",
+  "--color-brand-700": "#075985",
+  "--color-brand-800": "#0c4a6e",
+  "--color-brand-900": "#082f49",
+
+  "--color-red-50": "#fef2f2",
+  "--color-red-100": "#fee2e2",
+  "--color-red-200": "#fecaca",
+  "--color-red-600": "#dc2626",
+  "--color-red-800": "#991b1b",
+  "--color-emerald-50": "#ecfdf5",
+  "--color-emerald-200": "#a7f3d0",
+  "--color-emerald-600": "#059669",
+  "--color-emerald-800": "#065f46",
+  "--color-amber-50": "#fffbeb",
+  "--color-amber-200": "#fde68a",
+  "--color-amber-900": "#78350f",
+} as CSSProperties;

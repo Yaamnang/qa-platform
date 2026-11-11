@@ -6,7 +6,7 @@ import { expect, test } from "../lib/test";
 import { submitPassword } from "../lib/ui";
 
 // These tests need a signed-out browser and must not leave traces with secrets.
-test.use({ storageState: { cookies: [], origins: [] }, trace: "off", video: "off" });
+test.use({ storageState: { cookies: [], origins: [] }, trace: "off", screenshot: "off", video: "off" });
 
 type SignupDetails = { name: string; email: string; password: string; confirmPassword: string };
 
@@ -99,7 +99,7 @@ test.describe("Sign-up", { tag: ["@auth"] }, () => {
       await submitPassword(page, email, password);
       await expect(page.getByRole("main").getByRole("alert"), "Signing in with the refused details should fail, because no account should exist")
         .toHaveText("Incorrect email or password.");
-      await expect(page, "A refused sign-up must not lead to authenticator setup").toHaveURL(/\/login$/);
+      await expect(page, "A refused sign-up must not lead to authenticator setup").toHaveURL(/\/fake\/login$/);
     });
   });
 

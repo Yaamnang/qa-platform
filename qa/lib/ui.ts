@@ -10,7 +10,7 @@ import { liveAction } from "./live-view";
 
 export async function submitPassword(page: Page, email: string, password: string) {
   await liveAction(page, "Opening the sign-in page");
-  await page.goto("/login");
+  await page.goto("/fake/login");
   const emailField = page.getByLabel("Email");
   await liveAction(page, "Typing the email", emailField);
   await emailField.fill(email);

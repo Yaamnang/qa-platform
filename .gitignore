@@ -51,3 +51,6 @@ next-env.d.ts
 
 # explorer drafts from local runs
 /qa/drafts/
+
+# The stand-in, moving to its own repository
+/fake-client/

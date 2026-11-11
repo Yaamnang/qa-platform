@@ -10,11 +10,24 @@ import type { Job, Project } from "@/lib/console/contract";
 import { errorMessage, isSignedOut } from "../_components/api";
 import { formatAgo, jobTime, useNow } from "../_components/format";
 import { JOB_KIND_LABEL, JobStatusLabel, StatusDot } from "../_components/status";
-import { ListSkeleton, LoadError } from "../_components/states";
+import { LoadError } from "../_components/states";
 
 type ProjectRow = Project & { lastJob: Job | null };
 
-const COLUMNS = "sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_10rem_7rem_1rem] sm:items-center sm:gap-4";
+/** The grid the cards and their loading placeholders share. */
+const GRID = "grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
+
+/** Placeholder cards while the list loads. */
+function CardSkeleton() {
+  return (
+    <div aria-busy="true" className={GRID}>
+      <span className="sr-only">Loading workspaces</span>
+      {Array.from({ length: 3 }, (_, i) => (
+        <div key={i} className="h-[136px] animate-pulse rounded-xl border border-ink-200 bg-white" />
+      ))}
+    </div>
+  );
+}
 
 export default function ProjectsPage() {
   const router = useRouter();
@@ -29,7 +42,7 @@ export default function ProjectsPage() {
       .then((r) => !cancelled && setProjects(r.projects))
       .catch((err) => {
         if (cancelled) return;
-        if (isSignedOut(err)) router.replace("/console/login");
+        if (isSignedOut(err)) router.replace("/login");
         else setError(errorMessage(err, "Could not load workspaces."));
       });
     return () => {
@@ -56,7 +69,7 @@ export default function ProjectsPage() {
       {error ? (
         <LoadError testId="projects-error" message={error} onRetry={retry} />
       ) : projects === null ? (
-        <ListSkeleton label="Loading workspaces" />
+        <CardSkeleton />
       ) : projects.length === 0 ? (
         <div data-testid="projects-empty" className="rounded-xl border border-ink-200 bg-white">
           <EmptyState icon={<FileIcon className="size-5" />} title="No workspaces yet">
@@ -64,37 +77,48 @@ export default function ProjectsPage() {
           </EmptyState>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-ink-200 bg-white">
-          <div aria-hidden="true" className={`hidden border-b border-ink-200 px-5 py-2.5 text-xs font-medium text-ink-500 ${COLUMNS}`}>
-            <span>Name</span><span>Target</span><span>Last job</span><span>Ran</span><span />
-          </div>
-          <ul data-testid="project-list" className="divide-y divide-ink-100">
-            {projects.map((p) => (
+        <ul data-testid="project-list" className={GRID}>
+          {/* Newest workspace first. */}
+          {[...projects].sort((x, y) => y.createdAt - x.createdAt).map((p) => {
+            const ago = (ms: number) => (now ? formatAgo(ms, now) : formatDate(ms));
+            return (
               <li key={p.id}>
                 <Link href={`/console/projects/${p.id}/probe`} data-testid="project-row" data-project-id={p.id}
-                  className={`group block space-y-1 px-5 py-3.5 transition-colors hover:bg-ink-100/60 focus-visible:bg-ink-100/60 focus-visible:outline-none sm:space-y-0 ${COLUMNS}`}>
-                  <span className="block truncate text-sm font-medium text-ink-900">{p.name}</span>
-                  <span className="block truncate font-mono text-[13px] text-ink-600">{p.targetUrl}</span>
-                  <span className="block text-sm text-ink-700">
+                  className="group flex h-full flex-col rounded-xl border border-ink-200 bg-white shadow-card transition duration-150 hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-pop focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500">
+                  <div className="flex items-start gap-3 p-5">
+                    <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-brand-50 text-sm font-semibold uppercase text-brand-700">
+                      {p.name.trim()[0] ?? "?"}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-[15px] font-semibold text-ink-900">{p.name}</h2>
+                      <p title={p.targetUrl} className="mt-0.5 truncate font-mono text-xs text-ink-500">{p.targetUrl}</p>
+                    </div>
+                    <ChevronRightIcon className="mt-1 size-4 shrink-0 text-ink-300 transition group-hover:translate-x-0.5 group-hover:text-brand-600" />
+                  </div>
+                  <div className="mt-auto flex items-center justify-between gap-3 border-t border-ink-100 px-5 py-3 text-sm">
                     {p.lastJob ? (
-                      <><JobStatusLabel job={p.lastJob} /><span className="ml-1.5 text-xs text-ink-500">{JOB_KIND_LABEL[p.lastJob.kind]}</span></>
+                      <>
+                        <span className="min-w-0 truncate text-ink-700">
+                          <JobStatusLabel job={p.lastJob} dot={false} /><span className="ml-1.5 text-xs text-ink-500">{JOB_KIND_LABEL[p.lastJob.kind]}</span>
+                        </span>
+                        <time dateTime={new Date(jobTime(p.lastJob)).toISOString()} title={formatDate(jobTime(p.lastJob))} className="shrink-0 text-xs text-ink-500">
+                          {ago(jobTime(p.lastJob))}
+                        </time>
+                      </>
                     ) : (
-                      <StatusDot tone="idle"><span className="text-ink-500">No jobs</span></StatusDot>
+                      <>
+                        <StatusDot tone="idle" dot={false}>No jobs yet</StatusDot>
+                        <time dateTime={new Date(p.createdAt).toISOString()} title={formatDate(p.createdAt)} className="shrink-0 text-xs text-ink-500">
+                          Added {ago(p.createdAt)}
+                        </time>
+                      </>
                     )}
-                  </span>
-                  <span className="block text-sm text-ink-500">
-                    {p.lastJob ? (
-                      <time dateTime={new Date(jobTime(p.lastJob)).toISOString()} title={formatDate(jobTime(p.lastJob))}>
-                        {now ? formatAgo(jobTime(p.lastJob), now) : formatDate(jobTime(p.lastJob))}
-                      </time>
-                    ) : "Never"}
-                  </span>
-                  <ChevronRightIcon className="hidden size-4 text-ink-400 transition-transform group-hover:translate-x-0.5 sm:block" />
+                  </div>
                 </Link>
               </li>
-            ))}
-          </ul>
-        </div>
+            );
+          })}
+        </ul>
       )}
     </>
   );

@@ -56,6 +56,7 @@ export const config = {
 /** Prefix for everything the bot creates, so it can find and clean up only its own data. */
 export const QA_PREFIX = "qa-run-";
 
+/** The QA accounts' credentials. Redaction (qa/explore/redact.ts) decides the length floor. */
 export function secretValues(): string[] {
-  return [config.password, config.totpSecret, config.viewer.password, config.viewer.totpSecret].filter((s) => s.length >= 6);
+  return [config.password, config.totpSecret, config.viewer.password, config.viewer.totpSecret].filter((s) => s.length > 0);
 }

@@ -23,6 +23,17 @@ import type { JobPatch, JobRecord } from "./records";
  * tail too, and Claude, when it phrases the run's lines (phrase.ts), only ever
  * sees the transcript.
  *
+ * "Remember for this workspace" waits for proof. A remembered login or key is
+ * held here, in memory, beside the pending answers, and saved only when the run
+ * reports that sign-in worked (a say with the "signed-in" event, sent by
+ * qa/explore/crawl.ts and qa/reporter/console-chat.ts). If the job ends first,
+ * it is dropped, so a mistyped password is never stored.
+ *
+ * Steering messages are refused while the run waits for a login or a code, so
+ * a password typed into the wrong box is not sent. Text that is sent is stored
+ * as written, after redaction of the secrets already known: nothing here tries
+ * to guess whether free text is a password.
+ *
  * Every write for the job goes through the runner's own ordered write queue
  * (link.write), so a late chat update can never land on top of the final result.
  */
@@ -40,12 +51,25 @@ export type AnswerValues =
 
 type PendingAsk = { kind: AskKind; values: AnswerValues | null; closed: boolean };
 
+/**
+ * A login or setup key to save once sign-in has worked. save holds the
+ * encrypted values in a closure (answer/route.ts); nothing here can read them.
+ */
+export type HeldRemember = {
+  what: "Login" | "Authenticator key";
+  save: () => Promise<void>;
+};
+
+/** The run's say event that proves sign-in worked. */
+const SIGNED_IN_EVENT = "signed-in";
 type JobLink = {
   tokenHash: Buffer;
   messages: ChatMessage[];
   asks: Map<string, PendingAsk>;
   /** Steering messages from the employee that the child has not read yet. */
   inbox: string[];
+  /** Waiting for the run's sign-in to succeed. Memory only, one per kind, the latest wins. */
+  held: Map<HeldRemember["what"], HeldRemember>;
   /** The runner's redaction list. Shared, so answers given later are cut from the log too. */
   secrets: string[];
   write: (patch: JobPatch) => Promise<void>;
@@ -71,6 +95,7 @@ export function openLink(jobId: string, write: JobLink["write"], secrets: string
     messages: [],
     asks: new Map(),
     inbox: [],
+    held: new Map(),
     secrets,
     write,
     closed: false,
@@ -89,6 +114,12 @@ export function openLink(jobId: string, write: JobLink["write"], secrets: string
 export function closeLink(jobId: string): ChatMessage[] | undefined {
   const link = links.get(jobId);
   if (!link) return undefined;
+  // Sign-in never reported success: drop the values. Added straight to the
+  // final transcript, which the runner writes next.
+  for (const item of link.held.values()) {
+    link.messages.push({ id: `msg_${randomUUID().replace(/-/g, "").slice(0, 10)}`, at: Date.now(), from: "system", text: `${item.what} not saved: sign-in did not succeed.` });
+  }
+  link.held.clear();
   link.closed = true;
   link.asks.clear();
   link.inbox = [];
@@ -140,11 +171,13 @@ export function runSay(jobId: string, text: string, event?: string): void {
   const link = links.get(jobId);
   if (!link || link.closed) return;
   const template = clean(text, link);
-  if (!template) return;
-  link.chain = link.chain.then(async () => {
-    const wording = clean(await phrase("say", template, event, recentLines(link)), link);
-    append(link, { from: "run", text: wording || template });
-  });
+  if (template) {
+    link.chain = link.chain.then(async () => {
+      const wording = clean(await phrase("say", template, event, recentLines(link)), link);
+      append(link, { from: "run", text: wording || template });
+    });
+  }
+  if (event === SIGNED_IN_EVENT) saveHeld(link);
 }
 
 /** Creates the question at once, so the child can start polling, and shows it once it is phrased. */
@@ -199,10 +232,25 @@ export function drainInbox(jobId: string): string[] {
 // The employee's side
 // ---------------------------------------------------------------------------
 
-/** A steering message. Shown in the chat and passed to the run's next step. Returns false when the job has ended. */
+/**
+ * Why a steering message cannot be sent right now, or null. While the run
+ * waits for a login or a code, only the sign-in form may be answered.
+ */
+export function steeringRefusal(jobId: string): string | null {
+  const link = links.get(jobId);
+  if (!link || link.closed) return "This job is no longer running.";
+  const signingIn = [...link.asks.values()].some((a) => (a.kind === "login" || a.kind === "code") && !a.closed && !a.values);
+  return signingIn ? "The run is waiting for a sign-in. Answer the sign-in form first." : null;
+}
+
+/**
+ * A steering message. Shown in the chat and passed to the run's next step.
+ * Returns false when the job has ended or is waiting for a sign-in
+ * (steeringRefusal says which).
+ */
 export function employeeMessage(jobId: string, text: string): boolean {
   const link = links.get(jobId);
-  if (!link || link.closed) return false;
+  if (!link || link.closed || steeringRefusal(jobId)) return false;
   const safe = clean(text, link);
   if (!safe) return true;
   link.inbox.push(safe);
@@ -272,6 +320,17 @@ export function answerAsk(jobId: string, askId: string, values: AnswerValues): b
   return true;
 }
 
+/**
+ * Holds a login or key the employee asked to remember until the run reports
+ * that sign-in worked. Returns false when the job has ended, and nothing is kept.
+ */
+export function holdRemember(jobId: string, item: HeldRemember): boolean {
+  const link = links.get(jobId);
+  if (!link || link.closed) return false;
+  link.held.set(item.what, item);
+  return true;
+}
+
 /** A line from the console itself, such as "Saved for this workspace." */
 export function systemMessage(jobId: string, text: string): void {
   const link = links.get(jobId);
@@ -305,6 +364,23 @@ function persist(link: JobLink): void {
     link.waitedMs += Date.now() - link.waitingSince;
     link.waitingSince = null;
     void link.write({ status: "running" });
+  }
+}
+
+/** Sign-in worked: saves what was held, in order after the run's own line. */
+function saveHeld(link: JobLink): void {
+  const items = [...link.held.values()];
+  link.held.clear();
+  for (const item of items) {
+    link.chain = link.chain.then(async () => {
+      try {
+        await item.save();
+        append(link, { from: "system", text: `${item.what} saved for this workspace.` });
+      } catch {
+        // The error could quote the stored row, so it is not shown.
+        append(link, { from: "system", text: `${item.what} not saved: the workspace could not be updated.` });
+      }
+    });
   }
 }
 

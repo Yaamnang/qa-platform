@@ -22,6 +22,9 @@ ANTHROPIC_API_KEY=       # optional, for AI_MODE=claude
 SEED_QA_EMAIL=           # QA bot, external targets only
 SEED_QA_PASSWORD=
 SEED_QA_TOTP_SECRET=
+ADMIN_EMAIL=           # /admin portal, off unless all three are set
+ADMIN_PASSWORD=        # 16+ chars; npm run admin-key fills these
+ADMIN_TOTP_SECRET=     # key the admin phone scanned
 ```
 
 ## What this is

@@ -18,7 +18,7 @@ async function downloadDraft(jobId: string) {
     throw new ApiError(res.status, body.error ?? `Request failed (${res.status})`);
   }
   const blob = await res.blob();
-  const name = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `${jobId}.draft.spec.ts`;
+  const name = /filename="?([^";]+)"?/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? `${jobId}.draft.spec.txt`;
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

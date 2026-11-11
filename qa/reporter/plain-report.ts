@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { FullConfig, FullResult, Reporter, Suite, TestCase, TestError, TestResult, TestStep } from "@playwright/test/reporter";
-import { config, ROOT, secretValues } from "../lib/config";
+import { secretsToRedact } from "../explore/redact";
+import { config, ROOT } from "../lib/config";
 
 /**
  * Turns Playwright results into a report a product manager can act on:
@@ -37,7 +38,18 @@ export type Problem = {
   tests: string[];
   evidence: TestEntry["evidence"];
   triage?: string;
+  /** The page when it failed: images/<n>.png in the run folder, n being this problem's number. Absent when there is none. */
+  image?: ProblemImage;
+  /** Why there is no image, when there is none. */
+  imageNote?: string;
 };
+
+/** path is relative to the run folder, for example images/1.png. */
+export type ProblemImage = { n: number; path: string };
+
+/** Tests that switch screenshots off because they type passwords and one-time codes. */
+const NO_CAPTURE_FILES = new Set(["auth.setup.ts", "auth.spec.ts", "roles.spec.ts", "signup.spec.ts"]);
+export const NO_IMAGE_SIGN_IN = "No image (sign-in steps are never captured)";
 
 export type Summary = {
   runId: string;
@@ -68,9 +80,10 @@ const AREAS: Record<string, string> = {
 
 const ANSI = /\u001b\[[0-9;]*m/g;
 
+/** Read fresh each time, so a login, key or code shared later in the run is cut too. */
 function redact(s: string): string {
   let out = s;
-  for (const secret of secretValues()) out = out.split(secret).join("[REDACTED]");
+  for (const secret of secretsToRedact()) out = out.split(secret).join("[REDACTED]");
   return out;
 }
 
@@ -182,13 +195,16 @@ class PlainReport implements Reporter {
     // Group failures by root cause. Guard findings (crash, leak, safety) are
     // the most specific signal, so they win over the assertion that tripped later.
     const groups = new Map<string, Problem>();
-    for (const t of tests.filter((x) => x.outcome === "failed")) {
+    // Which test file each problem came from, to explain a missing image.
+    const fileOf = new Map<Problem, string>();
+    tests.forEach((t, index) => {
+      if (t.outcome !== "failed") return;
       const primary = t.guard[0] ?? t.errors[0] ?? "Unknown failure";
       const headline = headlineOf(primary);
       const p = groups.get(headline);
       if (p) {
         p.tests.push(t.journey);
-        continue;
+        return;
       }
       const details = [...new Set([...t.guard.slice(1), ...t.errors.map(describeError)])]
         .filter((d) => d !== headline)
@@ -202,9 +218,11 @@ class PlainReport implements Reporter {
         tests: [t.journey],
         evidence: t.evidence,
       });
-    }
+      fileOf.set(groups.get(headline)!, path.basename(this.allTests[index].location.file));
+    });
     const order = { critical: 0, high: 1, medium: 2 };
     const problems = [...groups.values()].sort((a, b) => order[a.severity] - order[b.severity]);
+    problems.forEach((p, i) => numberImage(p, i + 1, fileOf.get(p) ?? ""));
 
     let environment: Record<string, unknown> | null = null;
     try {
@@ -257,6 +275,33 @@ class PlainReport implements Reporter {
   }
 }
 
+/**
+ * Copies the screenshot Playwright took when the problem's first test failed
+ * to images/<n>.png, n being the problem's number in the report. Kept as PNG:
+ * converting would need a new dependency. Nothing is copied for a passing run,
+ * so a clean run has no images folder.
+ */
+function numberImage(p: Problem, n: number, file: string): void {
+  const shot = p.evidence.screenshot ? path.resolve(ROOT, p.evidence.screenshot) : null;
+  if (!shot || !existsSync(shot)) {
+    p.imageNote = NO_CAPTURE_FILES.has(file) ? NO_IMAGE_SIGN_IN : "No image";
+    return;
+  }
+  try {
+    const dir = path.join(config.resultsDir, "images");
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(shot, path.join(dir, `${n}.png`));
+    p.image = { n, path: `images/${n}.png` };
+  } catch {
+    p.imageNote = "No image";
+  }
+}
+
+/** "(Image 1)" for a log line, or nothing. */
+export function imageTag(p: Pick<Problem, "image">): string {
+  return p.image ? ` (Image ${p.image.n})` : "";
+}
+
 export function renderMarkdown(s: Summary): string {
   const icon = s.verdict === "PASS" ? "✅" : "❌";
   const L: string[] = [];
@@ -280,6 +325,8 @@ export function renderMarkdown(s: Summary): string {
       L.push(`- **User journey:** ${p.tests[0]}${p.tests.length > 1 ? ` (+${p.tests.length - 1} more affected: ${p.tests.slice(1).join("; ")})` : ""}`);
       if (p.failedStep) L.push(`- **Step that failed:** ${p.failedStep}`);
       for (const d of p.details) L.push(`- ${d}`);
+      if (p.image) L.push(`- **Image:** [Image ${p.image.n}](${p.image.path})`);
+      else if (p.imageNote) L.push(`- **Image:** ${p.imageNote}`);
       const ev = [
         p.evidence.screenshot && `[screenshot](${p.evidence.screenshot})`,
         p.evidence.timeline && `[job timeline](${p.evidence.timeline})`,

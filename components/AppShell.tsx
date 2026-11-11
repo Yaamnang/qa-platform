@@ -30,14 +30,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     api<Me>("/api/me")
       .then(setMe)
       .catch((e) => {
-        if (e instanceof ApiError && e.status === 401) router.replace("/login");
+        if (e instanceof ApiError && e.status === 401) router.replace("/fake/login");
         else if (e instanceof ApiError && e.code === "no-organization") router.replace("/orgs");
       });
   }, [router]);
 
   async function signOut() {
     await api("/api/auth/logout", { method: "POST" });
-    router.replace("/login");
+    router.replace("/fake/login");
   }
 
   if (!me) return <LoadingScreen />;

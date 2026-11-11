@@ -15,6 +15,9 @@
 export const CONSOLE_SESSION_COOKIE = "console_session";
 export const CONSOLE_CHALLENGE_COOKIE = "console_challenge";
 
+/** What each job kind is called on the pages. */
+export const JOB_KIND_LABEL: Record<JobKind, string> = { explore: "Explore", qa: "Probe" };
+
 export type Employee = { id: string; email: string; displayName: string };
 
 /** Never contains the QA account's password or TOTP secret, only whether they are set. */
@@ -24,13 +27,20 @@ export type Project = {
   targetUrl: string;
   qaEmail: string;
   hasCredentials: boolean;
-  /** True when this host is on CONSOLE_QA_HOSTS, so a full QA run (which writes data) is allowed. */
+  /**
+   * True when the target's host is on the allow-list (this machine). There a
+   * run started from GitHub may change data, and Full access test needs no confirm.
+   */
   qaRunAllowed: boolean;
+  /** The old stored "Full access" switch. Kept, but no longer read: access is chosen per run. */
+  fullAccess: boolean;
   createdAt: number;
   createdBy: string;
 };
 
 export type JobKind = "explore" | "qa";
+/** Per Probe run: "read" never changes data, "full" may save, upload and delete. */
+export type JobAccess = "read" | "full";
 /** "waiting": the run asked the employee something (a login, a code) and is paused until they answer. */
 export type JobStatus = "queued" | "running" | "waiting" | "passed" | "failed" | "error";
 
@@ -78,6 +88,14 @@ export type RunProblem = {
   failedStep: string | null;
   details: string[];
   tests: string[];
+  /**
+   * The number of the screenshot taken when it failed. For a console run the
+   * image itself is in the store (GET /api/console/jobs/:id/images/:n), not on
+   * disk. Missing on older jobs and when no image was taken.
+   */
+  image?: number;
+  /** Why there is no image, for example on a sign-in step. */
+  imageNote?: string;
 };
 
 export type Job = {
@@ -128,7 +146,23 @@ export type Job = {
 };
 
 /** by: "claude" when Claude Haiku wrote it, "template" when it was built from the facts without a model. */
-export type JobSummary = { text: string; by: "claude" | "template" };
+/**
+ * One thing worth acting on, sorted by where the fix belongs. product: the site
+ * under test is broken. test: the check or its data is wrong. environment: the
+ * site, network, login or server could not be used. Advisory only, like the text.
+ */
+export type TriageItem = {
+  category: "product" | "test" | "environment";
+  /** What is wrong, one sentence. */
+  point: string;
+  /** The log lines or facts it rests on, quoted with their times. */
+  evidence: string;
+  /** One concrete action. */
+  nextStep: string;
+};
+
+/** triage is missing on summaries written before it existed, and empty when nothing needs acting on. */
+export type JobSummary = { text: string; by: "claude" | "template"; triage?: TriageItem[] };
 
 /** Mirrors ExplorerSummary in qa/explore/types.ts. */
 export type JobExplorer = {
@@ -158,13 +192,27 @@ export type JobExplorer = {
 //      { name, targetUrl, qaEmail, qaPassword, qaTotpSecret }      -> 201 { project: Project }
 //      The QA account fields are optional. A run without them asks for them in the job's chat.
 // GET  /api/console/projects/:id                                  -> { project: Project, jobs: Job[] }
+// PATCH /api/console/projects/:id { fullAccess: boolean }         -> { project: Project }
+//      Stores the old Full access switch. No page uses it and no run reads it any more.
+//      409 while a run on this workspace is queued, running or waiting.
 
-// POST /api/console/projects/:id/jobs { kind: JobKind }           -> 202 { job: Job }
+// POST /api/console/projects/:id/jobs { kind: JobKind, access?: JobAccess } -> 202 { job: Job }
+//      access is for kind "qa" only, default "read". "read" never changes data on any host;
+//      "full" may save, upload and delete, and who started it is logged.
+//      400 if access is anything else.
 //      409 if a job is already running anywhere (one at a time: one browser, one port).
-//      403 with a plain reason if kind is "qa" and the host is not on CONSOLE_QA_HOSTS.
+//      403 if kind is "qa", access is "read" and the target is the stand-in, whose built-in suite always writes.
 // GET  /api/console/jobs/:id                                      -> { job: Job }
+// POST /api/console/jobs/:id/stop                                 -> 202 { ok: true }
+//      Stops a running job. It ends as "error" with "Stopped by <email>", keeping its log, chat and summary.
+//      409 if it has already finished, or is still starting.
 // PUT  /api/console/jobs/:id/approvals { approvedProposalIds }     -> { job: Job }
 // GET  /api/console/jobs/:id/draft                                -> text/plain draft spec of approved proposals only
+// GET  /api/console/jobs/:id/report                               -> text/html probe-report-<id>.html, one self-contained file
+//      A finished Probe job: verdict, counts, each problem with its image embedded, fixes needed, log tail.
+//      409 if the job is not a finished Probe job.
+// GET  /api/console/jobs/:id/images/:n                             -> image/jpeg or image/png, problem image n
+//      Read from the store. 404 if the job has no such image, or it was not saved.
 // POST /api/console/jobs/:id/messages { text }                     -> { job: Job }
 //      A steering message from the employee while the job runs. The explorer reads them before its next step.
 // POST /api/console/jobs/:id/answer { askId, values, remember? }   -> { job: Job }
@@ -189,7 +237,7 @@ export type JobExplorer = {
 //   /console/projects/:id            redirects to /console/projects/:id/probe
 //   /console/projects/:id/explore    start Explore, explore history
 //   /console/projects/:id/probe      start Probe, probe history
-//   /console/projects/:id/github     connect GitHub, workflow file, GitHub-triggered runs
+//   /console/projects/:id/github     connect GitHub, the auto check switch, GitHub-triggered runs
 // ---------------------------------------------------------------------------
 
 /** Where a job came from. Present on every Job from now on; old rows read as "manual". */
@@ -221,7 +269,12 @@ export type GithubLink = {
   lastCheckedAt: number | null;
   lastSeenSha: string | null;
   lastTriggeredAt: number | null;
+  /** "Check every new commit". On by default. Off: nothing runs by itself, Check now still works. */
+  autoCheck: boolean;
 };
+
+/** The code test's answer when the workspace has no GitHub token. The page shows a link to the GitHub tab for it. */
+export const GITHUB_NOT_CONNECTED = "Connect GitHub first.";
 
 export type GithubRepo = { fullName: string; private: boolean; defaultBranch: string; pushedAt: number | null };
 
@@ -237,14 +290,28 @@ export type GithubRepo = { fullName: string; private: boolean; defaultBranch: st
 // PUT    /api/console/projects/:id/github { repo, branch } -> { github: GithubLink }
 //        Starts watching. The branch's current head becomes lastSeenSha, so
 //        connecting does not start a run; the next new commit does.
+// PATCH  /api/console/projects/:id/github { autoCheck }    -> { github: GithubLink }
+//        Turns "Check every new commit" on or off. Needs a repo and branch.
+//        500 with "Run db/schema-console.sql ..." when the column is missing.
 // POST   /api/console/projects/:id/github/check            -> { github: GithubLink, startedJobId: string | null }
 //        Polls now instead of waiting for the next tick (for demos).
+// POST   /api/console/projects/:id/github/test { repoUrl } -> 202 { job: Job }
+//        The GitHub code test: a Probe for the newest commit on the default branch
+//        of any repo the connected account can push to. Commit statuses as for a
+//        watched branch. Does not change the watched repo or branch. Read-only
+//        unless the host is on the allow-list.
+//        409 GITHUB_NOT_CONNECTED without a token, 409 when a job is running,
+//        400 for a link that is not https://github.com/owner/repo,
+//        403 "You are not a collaborator on owner/repo." without push access,
+//        422 for a missing default branch. Needs no saved login: the employee is
+//        watching, so the run may ask for it in the job's chat.
 // DELETE /api/console/projects/:id/github                  -> { github: GithubLink }
 //        Forgets the token and the repo.
 //
-// The poller checks every watched branch every GITHUB_POLL_MS (default 60000).
+// The poller checks every watched branch with autoCheck on every GITHUB_POLL_MS (default 60000).
 // A new commit starts a Probe (kind "qa") with trigger "github", under the same
-// allow-list and one-job-at-a-time rules as a manual Probe, and posts a commit
+// one-job-at-a-time rule as a manual Probe. Nobody chose its access, so it may
+// change data only on an allow-listed host (Project.qaRunAllowed). It posts a commit
 // status ("Eclypse QA") on GitHub: pending while it runs, then success, failure
 // or error, linking to the job page.
 

@@ -1,10 +1,12 @@
-import { statSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { isSignInScreen, pathOf, settle } from "../explore/crawl";
 import { redact } from "../explore/redact";
+import { CaptchaBlocked, captchaAnswerFromPerson, captchaField, detectCaptcha, isCaptchaField, sharesFormWithCaptcha, solveWithPerson, WIDGET_WHY, blockedByCaptcha } from "../lib/captcha";
 import { say } from "../lib/console-link";
-import { liveAction } from "../lib/live-view";
+import { captureIssue, liveAction } from "../lib/live-view";
+import { NO_IMAGE_SIGN_IN } from "../reporter/plain-report";
 import { blockedCount, type ProbeSession } from "./session";
 import type { JourneyResult, ProbeJourney, ProbeStep, StepResult } from "./types";
 
@@ -16,10 +18,14 @@ import type { JourneyResult, ProbeJourney, ProbeStep, StepResult } from "./types
  *  - A click after which nothing observable changed at all (URL, DOM, a
  *    same-origin request, a dialog, a new tab or a download) is the dead
  *    button case: "Button did nothing".
- *  - Off the allow-list, a step whose request the read-only guard blocked is
+ *  - Without Full access, a step whose request the read-only guard blocked is
  *    skipped ("would change data, read-only on this host"), never failed.
  *  - A failed journey is run once more before it is reported, like the
  *    built-in suite. Passing the second time makes it flaky, not failed.
+ *  - A CAPTCHA is never solved here. Filling it, or submitting its form,
+ *    asks the person watching (qa/lib/captcha.ts). When nobody can answer,
+ *    or sign-in was stopped by one, the journey is skipped as blocked by a
+ *    CAPTCHA, never failed.
  *
  * Planning run only (calibrate): the plan is a guess, so a guess that does
  * not fit the site must not become a false alarm. A step whose element is
@@ -155,7 +161,10 @@ function uploadFile(dir: string, accept: string): string {
   return file;
 }
 
-type Outcome = { ok: true } | { ok: false; headline: string; reason: string; elementMissing?: boolean };
+/** blocked: a CAPTCHA nobody could answer. The journey is skipped with this line, not failed. */
+type Outcome = { ok: true } | { ok: false; headline: string; reason: string; elementMissing?: boolean; blocked?: string };
+
+const blockedOutcome = (line: string): Outcome => ({ ok: false, headline: line, reason: line, blocked: line });
 
 export type ExecuteOptions = {
   session: ProbeSession;
@@ -163,6 +172,8 @@ export type ExecuteOptions = {
   readOnly: boolean;
   calibrate: boolean;
   workDir: string;
+  /** Where the screenshots of failed journeys go: qa-results/<run id>/images. */
+  imagesDir: string;
   secrets: () => string[];
   log: (line: string) => void;
   notes: string[];
@@ -202,14 +213,34 @@ async function runStep(options: ExecuteOptions, step: ProbeStep): Promise<Outcom
         break;
       }
       case "click":
-      case "download":
-        await liveAction(page, step.action === "download" ? `Downloading from '${name}'` : `Clicking '${name}'`, locator!);
-        await locator!.click({ timeout: FIND_TIMEOUT_MS });
+      case "download": {
+        const click = async () => {
+          await liveAction(page, step.action === "download" ? `Downloading from '${name}'` : `Clicking '${name}'`, locator!);
+          await locator!.click({ timeout: FIND_TIMEOUT_MS });
+        };
+        const captcha = await detectCaptcha(page);
+        if (captcha === "none" || !(await sharesFormWithCaptcha(locator!))) {
+          await click();
+          break;
+        }
+        // Submitting a form that has a CAPTCHA: a person answers it, or the journey is blocked.
+        if (captcha === "widget") return blockedOutcome(blockedByCaptcha(where, WIDGET_WHY));
+        const answered = (await captchaField(page).inputValue({ timeout: 1000 }).catch(() => "")) !== "";
+        await solveWithPerson(page, where, { answered, submit: async () => { await click(); await settle(page); } });
         break;
+      }
       case "fill": {
         const meta = await locator!.evaluate((el) => ({ type: (el.getAttribute("type") || "").toLowerCase(), ac: (el.getAttribute("autocomplete") || "").toLowerCase() }));
         if (meta.type === "password" || meta.ac.includes("one-time-code") || meta.ac.includes("password") || meta.ac.startsWith("cc-")) {
           return { ok: false, headline: `"${name}" is a secret field`, reason: "The probe never types into password, code or card fields." };
+        }
+        // The CAPTCHA field gets the person's answer, never a made-up value.
+        // A widget only matters when its form is submitted (the click below).
+        if ((await detectCaptcha(page)) === "text" && (await isCaptchaField(locator!))) {
+          typed = await captchaAnswerFromPerson(page, where);
+          await liveAction(page, "Typing the CAPTCHA answer", locator!);
+          await locator!.fill(typed, { timeout: FIND_TIMEOUT_MS });
+          break;
         }
         typed = await fakeValue(locator!, step.value, options.secrets());
         await liveAction(page, `Typing into '${name}'`, locator!);
@@ -240,6 +271,7 @@ async function runStep(options: ExecuteOptions, step: ProbeStep): Promise<Outcom
       }
     }
   } catch (error) {
+    if (error instanceof CaptchaBlocked) return blockedOutcome(error.message);
     const first = redact((error as Error).message.split("\n")[0], options.secrets());
     const blockedNow = blockedCount(session.blocked) > before.blocked;
     if (blockedNow) return { ok: false, headline: READ_ONLY_SKIP, reason: READ_ONLY_SKIP };
@@ -253,7 +285,7 @@ async function runStep(options: ExecuteOptions, step: ProbeStep): Promise<Outcom
   const ok = await checkOutcome(options, step, before, downloadsBefore, typed, locator);
   if (ok === true) return { ok: true };
 
-  // The guard blocked a write while the step ran: off the allow-list that is a skip, not a failure.
+  // The guard blocked a write while the step ran: without Full access that is a skip, not a failure.
   if (blockedCount(session.blocked) > before.blocked) return { ok: false, headline: READ_ONLY_SKIP, reason: READ_ONLY_SKIP };
 
   const clickish = step.action === "click" || step.action === "download";
@@ -355,20 +387,29 @@ async function openStart(options: ExecuteOptions, start: string): Promise<void> 
   }
 }
 
-/** One attempt at one journey. Returns the result and the journey as it should be recorded. */
-async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<{ result: JourneyResult; recorded: ProbeJourney | null }> {
+/** The page at the moment a step failed. Never taken on a sign-in step. */
+type Shot = Awaited<ReturnType<typeof captureIssue>>;
+
+type Attempt = { result: JourneyResult; recorded: ProbeJourney | null; shot?: Shot };
+
+/** One attempt at one journey. Returns the result, the journey as it should be recorded, and the page if it failed. */
+async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<Attempt> {
   const started = Date.now();
   const steps: StepResult[] = [];
   const kept: ProbeStep[] = [];
   let headline: string | null = null;
   let failedStep: string | null = null;
   let skipped = false;
+  let blocked: string | null = null;
+  let shot: Shot = null;
 
   try {
     await openStart(options, journey.start);
   } catch (error) {
     const reason = redact((error as Error).message.split("\n")[0], options.secrets());
+    const shot = await captureIssue(options.session.page);
     return {
+      shot,
       result: {
         name: journey.name, start: journey.start, outcome: "failed", headline: `${journey.start} did not load`, failedStep: `Open ${journey.start}`,
         steps: journey.steps.map((s, i) => ({ title: s.title, action: s.action, expect: s.expect, status: i === 0 ? "failed" : "not-run", reason: i === 0 ? reason : null, durationMs: 0 })),
@@ -381,7 +422,7 @@ async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<
   for (let i = 0; i < journey.steps.length; i++) {
     const step: ProbeStep = { ...journey.steps[i] };
     if (headline || skipped) {
-      steps.push({ title: step.title, action: step.action, expect: step.expect, status: "not-run", reason: skipped ? "An earlier step was skipped." : null, durationMs: 0 });
+      steps.push({ title: step.title, action: step.action, expect: step.expect, status: "not-run", reason: blocked ? "An earlier step was blocked by a CAPTCHA." : skipped ? "An earlier step was skipped." : null, durationMs: 0 });
       kept.push(step);
       continue;
     }
@@ -389,8 +430,11 @@ async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<
     const stepStarted = Date.now();
     options.log(`   ${i + 1}. ${step.title}`);
     let outcome = await runStep(options, step);
+    // Still on the sign-in screen because a CAPTCHA stopped the sign-in: that is why the step could not work.
+    const gateBlocked = options.session.gate.blocked;
+    if (!outcome.ok && !outcome.blocked && gateBlocked && (await isSignInScreen(options.session.page))) outcome = blockedOutcome(gateBlocked);
 
-    if (!outcome.ok && options.calibrate) {
+    if (!outcome.ok && options.calibrate && !outcome.blocked) {
       if (outcome.elementMissing) {
         options.notes.push(`Planning: "${journey.name}" step "${step.title}" was dropped, its element was not on the page.`);
         options.log(`      dropped from the plan: ${outcome.reason}`);
@@ -409,6 +453,12 @@ async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<
     kept.push(step);
     if (outcome.ok) {
       steps.push({ title: step.title, action: step.action, expect: step.expect, status: "passed", reason: null, durationMs });
+    } else if (outcome.blocked) {
+      skipped = true;
+      blocked = outcome.blocked;
+      options.log(`      blocked: ${outcome.blocked}`);
+      if (!options.notes.includes(outcome.blocked)) options.notes.push(outcome.blocked);
+      steps.push({ title: step.title, action: step.action, expect: step.expect, status: "skipped", reason: outcome.blocked, durationMs });
     } else if (outcome.headline === READ_ONLY_SKIP) {
       skipped = true;
       options.log(`      skipped: ${READ_ONLY_SKIP}`);
@@ -417,6 +467,7 @@ async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<
       headline = outcome.headline;
       failedStep = step.title;
       options.log(`      FAILED: ${outcome.headline}`);
+      shot = await captureIssue(options.session.page);
       steps.push({ title: step.title, action: step.action, expect: step.expect, status: "failed", reason: outcome.reason, durationMs });
     }
   }
@@ -424,11 +475,31 @@ async function attempt(options: ExecuteOptions, journey: ProbeJourney): Promise<
   // Planning run: a journey with nothing left in it is not recorded and not reported.
   if (options.calibrate && kept.length === 0) return { result: { name: journey.name, start: journey.start, outcome: "skipped", headline: null, failedStep: null, steps: [], durationMs: Date.now() - started }, recorded: null };
   const passedAny = steps.some((s) => s.status === "passed");
-  const outcome: JourneyResult["outcome"] = headline ? "failed" : skipped && !passedAny ? "skipped" : "passed";
+  const outcome: JourneyResult["outcome"] = headline ? "failed" : blocked || (skipped && !passedAny) ? "skipped" : "passed";
   return {
-    result: { name: journey.name, start: journey.start, outcome, headline, failedStep, steps, durationMs: Date.now() - started },
+    result: { name: journey.name, start: journey.start, outcome, headline, failedStep, steps, durationMs: Date.now() - started, ...(blocked ? { blocked } : {}) },
     recorded: { ...journey, steps: kept },
+    shot,
   };
+}
+
+/** Saves the failed journey's picture as images/<n>.jpg, n being its problem number. A failed write only costs the image. */
+function saveShot(options: ExecuteOptions, result: JourneyResult, shot: Shot | undefined, n: number): void {
+  if (shot === "sign-in") {
+    result.imageNote = NO_IMAGE_SIGN_IN;
+    return;
+  }
+  if (!shot) {
+    result.imageNote = "No image";
+    return;
+  }
+  try {
+    mkdirSync(options.imagesDir, { recursive: true });
+    writeFileSync(path.join(options.imagesDir, `${n}.jpg`), shot);
+    result.image = n;
+  } catch {
+    result.imageNote = "No image";
+  }
 }
 
 export async function runJourneys(options: ExecuteOptions, journeys: ProbeJourney[]): Promise<{ results: JourneyResult[]; recorded: ProbeJourney[] }> {
@@ -448,6 +519,8 @@ export async function runJourneys(options: ExecuteOptions, journeys: ProbeJourne
       }
     }
     if (options.calibrate && !run.recorded) continue;
+    // Problems are the failed journeys in this order, so this one is problem n.
+    if (run.result.outcome === "failed") saveShot(options, run.result, run.shot, results.filter((r) => r.outcome === "failed").length + 1);
     results.push(run.result);
     if (run.recorded) recorded.push(run.recorded);
     const r = run.result;

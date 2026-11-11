@@ -3,13 +3,14 @@ import { freshCode, wrongCode } from "../lib/totp";
 import { expect, test } from "../lib/test";
 import { chooseOrganization, expectSignedInWorkspace, submitCode, submitPassword } from "../lib/ui";
 
-// These tests need a signed-out browser and must not leave traces with secrets.
-test.use({ storageState: { cookies: [], origins: [] }, trace: "off", video: "off" });
+// These tests need a signed-out browser.
+// Traces record typed values, so never trace the steps that type secrets.
+test.use({ storageState: { cookies: [], origins: [] }, trace: "off", screenshot: "off", video: "off" });
 
 test.describe("Sign-in", { tag: ["@auth", "@live-safe"] }, () => {
   test("signed-out visitors are sent to the sign-in page", async ({ page }) => {
     await page.goto("/workspace");
-    await expect(page, "Opening the workspace while signed out should redirect to sign-in").toHaveURL(/\/login$/);
+    await expect(page, "Opening the workspace while signed out should redirect to sign-in").toHaveURL(/\/fake\/login$/);
     await expect(page.getByRole("heading", { name: "Sign in to Eclypse" })).toBeVisible();
   });
 
@@ -24,7 +25,7 @@ test.describe("Sign-in", { tag: ["@auth", "@live-safe"] }, () => {
     await submitCode(page, wrongCode());
     await expect(page.getByRole("main").getByRole("alert"), "A wrong one-time code should show a clear error").toContainText("That code is not valid");
     await page.goto("/workspace");
-    await expect(page, "A rejected code must not create a session").toHaveURL(/\/login$/);
+    await expect(page, "A rejected code must not create a session").toHaveURL(/\/fake\/login$/);
   });
 
   test("a user can sign in with a one-time code and sign out again", async ({ page }) => {
@@ -38,11 +39,11 @@ test.describe("Sign-in", { tag: ["@auth", "@live-safe"] }, () => {
     });
     await test.step("Sign out", async () => {
       await page.getByRole("button", { name: "Sign out" }).click();
-      await expect(page, "Signing out should return the user to the sign-in page").toHaveURL(/\/login$/);
+      await expect(page, "Signing out should return the user to the sign-in page").toHaveURL(/\/fake\/login$/);
     });
     await test.step("The old session no longer works", async () => {
       await page.goto("/workspace");
-      await expect(page, "After signing out, protected pages should redirect to sign-in").toHaveURL(/\/login$/);
+      await expect(page, "After signing out, protected pages should redirect to sign-in").toHaveURL(/\/fake\/login$/);
     });
   });
 });

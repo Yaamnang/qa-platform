@@ -16,8 +16,8 @@
  *  3. After a planning run, the journeys as executed are written to
  *     PROBE_PLAN_OUT, which the console saves on the workspace.
  *
- * Read-only unless PROBE_WRITES_ALLOWED=1 (the console sets it for hosts on
- * CONSOLE_QA_HOSTS). Exit code: 0 PASS, 1 FAIL, 2 could not run, 3 runner error.
+ * Read-only unless PROBE_WRITES_ALLOWED=1 (the console sets it on this
+ * machine, or when the workspace's Full access is on). Exit code: 0 PASS, 1 FAIL, 2 could not run, 3 runner error.
  * The last lines print "Report: qa-results/<run id>/report.md", which is how
  * the console finds summary.json.
  */
@@ -33,6 +33,7 @@ import { liveAction } from "../lib/live-view";
 import { hasAnthropicKey, isStandIn, NO_KEY_NO_PLAN } from "./detect";
 import { runJourneys } from "./execute";
 import { approxCost, PlanError, planJourneys, PROBE_MODEL, samePath } from "./plan";
+import { imageTag } from "../reporter/plain-report";
 import { buildSummary, writeSummary } from "./report";
 import { openProbeSession } from "./session";
 import { readScreenOf, type Screen } from "./snapshot";
@@ -126,10 +127,7 @@ async function aiProbe(target: string): Promise<number> {
     password: process.env.QA_PASSWORD ?? "",
     totpSecret: process.env.QA_TOTP_SECRET ?? "",
   };
-  const secrets = () =>
-    [...secretsToRedact(), credentials.password, credentials.totpSecret]
-      .filter((v) => typeof v === "string" && v.trim().length >= 6)
-      .sort((a, b) => b.length - a.length);
+  const secrets = () => secretsToRedact([credentials.password, credentials.totpSecret]);
 
   const finish = async (journeys: Parameters<typeof buildSummary>[0]["journeys"], probe: ProbeInfo | null, globalErrors: string[]) => {
     const summary = buildSummary({ runId, baseURL: origin, startedAt, journeys, probe, globalErrors, notes: notes.map((n) => redact(n, secrets())) });
@@ -138,7 +136,8 @@ async function aiProbe(target: string): Promise<number> {
     log("");
     log(` AI PROBE RESULT: ${summary.verdict}   ${c.passed} passed · ${c.failed} failed · ${c.flaky} flaky · ${c.skipped} skipped · ${Math.round(summary.durationMs / 1000)}s`);
     for (const e of summary.globalErrors) log(` ! ${e}`);
-    summary.problems.forEach((p, i) => log(` ${i + 1}. ${p.headline}${p.failedStep ? ` (step: ${p.failedStep})` : ""}`));
+    if (summary.notRun) log(` ${summary.notRun}`);
+    summary.problems.forEach((p, i) => log(` ${i + 1}. ${p.headline}${p.failedStep ? ` (step: ${p.failedStep})` : ""}${imageTag(p)}`));
     if (probe) {
       log(
         probe.mode === "recorded"
@@ -149,7 +148,7 @@ async function aiProbe(target: string): Promise<number> {
     log(` Report: qa-results/${runId}/report.md`);
     const first = summary.problems[0]?.headline;
     await say(
-      summary.verdict === "PASS" ? `Verdict PASS: ${c.passed} passed, ${c.flaky} flaky, ${c.skipped} skipped.`
+      summary.verdict === "PASS" ? `Verdict PASS: ${c.passed} passed, ${c.flaky} flaky, ${c.skipped} skipped.${summary.notRun ? ` ${summary.notRun}` : ""}`
         : summary.verdict === "FAIL" ? `Verdict FAIL: ${c.failed} failed. First problem: ${first}.`
           : `Verdict ${summary.verdict}: ${summary.globalErrors[0] ?? "nothing could run"}.`,
       "verdict",
@@ -197,7 +196,7 @@ async function aiProbe(target: string): Promise<number> {
     }
 
     const { results, recorded: executed } = await runJourneys(
-      { session, origin, readOnly, calibrate: !recorded, workDir, secrets, log, notes },
+      { session, origin, readOnly, calibrate: !recorded, workDir, imagesDir: path.join(ROOT, "qa-results", runId, "images"), secrets, log, notes },
       journeys,
     );
 

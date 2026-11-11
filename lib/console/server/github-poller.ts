@@ -1,19 +1,29 @@
 import "server-only";
 import type { JobCommit } from "../contract";
 import { decryptSecret } from "./encryption";
-import { GithubApiError, branchHead, consoleBaseUrl, jobPageUrl, postStatus, type StatusState } from "./github";
+import { GithubApiError, branchHead, consoleBaseUrl, jobPageUrl, postStatus, repoOfCommitUrl, type StatusState } from "./github";
+import { hostAllowsWrites } from "./projects";
 import type { GithubLinkRecord, JobRecord } from "./records";
-import { startProjectJob } from "./start";
+import { startProjectJob, type StartOutcome } from "./start";
 import { getGithubLink, getJob, getProject, listGithubLinks, patchGithubLink } from "./store";
 
 /**
  * The GitHub poller. Every GITHUB_POLL_MS it asks GitHub for the newest commit
  * on each watched branch. A commit it has not seen starts a Probe through the
- * same startProjectJob as the Probe button, so the allow-list and the
- * one-job-at-a-time rule apply unchanged. It reports back to GitHub with
- * commit statuses: pending while the job runs, then success, failure or error.
+ * same startProjectJob as the Probe buttons, so the one-job-at-a-time rule
+ * applies unchanged. Nobody chose its access, so it may change data only on
+ * an allow-listed host (projects.ts hostAllowsWrites), whatever the stored
+ * Full access switch says. It reports back to GitHub with commit statuses:
+ * pending while the job runs, then success, failure or error.
+ *
+ * The GitHub code test (testCommit) starts its Probe the same way, for a repo
+ * that need not be the watched one. The final status goes to the repo in the
+ * job's commit link, so it lands on the right repo either way.
  *
  * One loop per server process, started from instrumentation.ts.
+ *
+ * Workspaces with "Check every new commit" off are skipped, apart from
+ * posting the final status of a run that started before it was turned off.
  *
  * Several console servers on one Supabase database would each poll. The
  * runner's database check stops two jobs running at once, but to be sure only
@@ -56,8 +66,14 @@ async function tick(): Promise<void> {
   state.ticking = true;
   try {
     for (const link of await listGithubLinks()) {
-      if (!isWatched(link)) continue;
-      await checkWorkspace(link.projectId).catch((err: unknown) => logFailure(link, err));
+      if (!isWatched(link)) {
+        // Not watching a branch, but a code test may still need its final status.
+        if (link.tokenEnc && link.pendingJobId) await finishPending(link.projectId).catch((err: unknown) => logFailure(link, err));
+        continue;
+      }
+      // Switch off: no new runs, but a run already started still gets its final status.
+      const work = link.autoCheck === false ? finishPending(link.projectId) : checkWorkspace(link.projectId);
+      await work.catch((err: unknown) => logFailure(link, err));
     }
   } catch (err) {
     console.error("[console] GitHub poll could not list workspaces:", err instanceof Error ? err.message : err);
@@ -74,7 +90,7 @@ export function isWatched(link: GithubLinkRecord | undefined): link is WatchedLi
 }
 
 /**
- * Checks one workspace now. Returns the id of the Probe it started, or null
+ * Checks one workspace now, whatever the switch says (the "Check now" button). Returns the id of the Probe it started, or null
  * when there was nothing new (or the console was busy, in which case the next
  * tick tries again). Throws on a GitHub or database failure; the tick logs
  * it, the "check now" route reports it.
@@ -84,6 +100,18 @@ export async function checkWorkspace(projectId: string): Promise<string | null> 
   state.checking.add(projectId);
   try {
     return await check(projectId);
+  } finally {
+    state.checking.delete(projectId);
+  }
+}
+
+/** For a workspace with the switch off, or with no watched branch: only posts the final status of a run started earlier. */
+async function finishPending(projectId: string): Promise<void> {
+  if (state.checking.has(projectId)) return;
+  state.checking.add(projectId);
+  try {
+    const link = await getGithubLink(projectId);
+    if (link?.tokenEnc && link.pendingJobId) await reportFinished(link, decryptSecret(link.tokenEnc), link.pendingJobId);
   } finally {
     state.checking.delete(projectId);
   }
@@ -113,7 +141,10 @@ async function check(projectId: string): Promise<string | null> {
   if (!project) return null;
   const commit: JobCommit = { sha: head.sha, ref: link.branch, runUrl: head.htmlUrl };
   const createdBy = link.account ? `github:${link.account}` : "github";
-  const outcome = await startProjectJob(project, "qa", createdBy, { trigger: "github", commit });
+  const outcome = await startProjectJob(project, "qa", createdBy, {
+    writes: hostAllowsWrites(project.targetUrl),
+    origin: { trigger: "github", commit },
+  });
 
   if ("error" in outcome && outcome.status === 409) {
     // Busy: another job holds the one slot. lastSeenSha stays, and the ETag
@@ -123,11 +154,11 @@ async function check(projectId: string): Promise<string | null> {
   }
 
   if ("error" in outcome) {
-    // Refused for good (403: host not on the allow-list, 422: no QA account,
+    // Refused for good (403: read-only on the stand-in, 422: no QA account,
     // 500: no console key). Retrying would fail the same way every tick, so
     // the commit is marked handled and GitHub is told why.
     await patchGithubLink(projectId, { lastCheckedAt: now, lastSeenSha: head.sha, etag: head.etag });
-    await safeStatus(link, token, head.sha, { state: "error", description: outcome.error, targetUrl: projectPageUrl(projectId) });
+    await safeStatus(link, token, link.repo, head.sha, { state: "error", description: outcome.error, targetUrl: projectPageUrl(projectId) });
     return null;
   }
 
@@ -139,16 +170,62 @@ async function check(projectId: string): Promise<string | null> {
     etag: head.etag,
     pendingJobId: job.id,
   });
-  await safeStatus(link, token, head.sha, { state: "pending", description: "Probe running", targetUrl: jobPageUrl(job.id) });
+  await safeStatus(link, token, link.repo, head.sha, { state: "pending", description: "Probe running", targetUrl: jobPageUrl(job.id) });
   return job.id;
 }
 
-/** Posts the final status for a GitHub-started job once it has finished. Still running: nothing to do yet. */
-async function reportFinished(link: GithubLinkRecord & { repo: string }, token: string, jobId: string): Promise<void> {
+/**
+ * The GitHub code test: a Probe for the newest commit on one branch of a repo
+ * the route has already checked the account can push to. Started and
+ * reported like a watched branch's new commit, but the watched repo, branch,
+ * last seen commit and ETag stay as they are. Only pendingJobId is set, so
+ * the poller posts the final status. Throws on a GitHub or database failure.
+ */
+export async function testCommit(projectId: string, repo: string, branch: string, createdBy: string): Promise<StartOutcome> {
+  if (state.checking.has(projectId)) {
+    return { status: 409, error: "GitHub is being checked for this workspace right now. Try again in a moment." };
+  }
+  state.checking.add(projectId);
+  try {
+    const link = await getGithubLink(projectId);
+    const project = await getProject(projectId);
+    if (!link?.tokenEnc || !project) return { status: 404, error: "Project not found." };
+    const token = decryptSecret(link.tokenEnc);
+
+    // Close off the last GitHub-started job first, as check does, so its final status is not lost.
+    if (link.pendingJobId) await reportFinished(link, token, link.pendingJobId);
+
+    const head = await branchHead(token, repo, branch, null);
+    if ("missing" in head) return { status: 422, error: `Could not find branch ${branch} in ${repo}.` };
+    if (!head.changed) return { status: 502, error: "GitHub gave no answer for that branch. Try again." };
+
+    const commit: JobCommit = { sha: head.sha, ref: branch, runUrl: head.htmlUrl };
+    // attended: the employee who pressed the button is watching, so the run may ask for a login in the chat.
+    const outcome = await startProjectJob(project, "qa", createdBy, {
+      writes: hostAllowsWrites(project.targetUrl),
+      origin: { trigger: "github", commit },
+      attended: true,
+    });
+    if ("error" in outcome) return outcome;
+
+    await patchGithubLink(projectId, { pendingJobId: outcome.job.id });
+    await safeStatus(link, token, repo, head.sha, { state: "pending", description: "Probe running", targetUrl: jobPageUrl(outcome.job.id) });
+    return outcome;
+  } finally {
+    state.checking.delete(projectId);
+  }
+}
+
+/**
+ * Posts the final status for a GitHub-started job once it has finished. Still running: nothing to do yet.
+ * The repo comes from the job's commit link, so a code test reports to its own repo, not the watched one.
+ */
+async function reportFinished(link: GithubLinkRecord, token: string, jobId: string): Promise<void> {
   const job = await getJob(jobId);
   if (job && (job.status === "queued" || job.status === "running" || job.status === "waiting")) return;
-  if (job?.commit) {
-    await safeStatus(link, token, job.commit.sha, { ...finalStatus(job), targetUrl: jobPageUrl(job.id) });
+  const repo = repoOfCommitUrl(job?.commit?.runUrl) ?? link.repo;
+  if (job?.commit && repo) {
+    await safeStatus(link, token, repo, job.commit.sha, { ...finalStatus(job), targetUrl: jobPageUrl(job.id) });
   }
   await patchGithubLink(link.projectId, { pendingJobId: null });
 }
@@ -171,12 +248,13 @@ function projectPageUrl(projectId: string): string {
  * around it must still be saved.
  */
 async function safeStatus(
-  link: GithubLinkRecord & { repo: string },
+  link: GithubLinkRecord,
   token: string,
+  repo: string,
   sha: string,
   status: { state: StatusState; description: string; targetUrl: string },
 ): Promise<void> {
-  await postStatus(token, link.repo, sha, status).catch((err: unknown) => logFailure(link, err));
+  await postStatus(token, repo, sha, status).catch((err: unknown) => logFailure(link, err));
 }
 
 /** One line, never the token: GithubApiError messages are built without it, and other errors carry no request data. */

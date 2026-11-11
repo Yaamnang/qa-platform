@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   monitor:
+    # Skips until a real live platform is configured (repo variable PROD_URL).
+    if: vars.PROD_URL != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production-monitor

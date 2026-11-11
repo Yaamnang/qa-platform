@@ -17,7 +17,7 @@ import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFile
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { BUG_CATALOG, MUST_STILL_PASS, type BugId } from "../lib/bug-catalog";
-import { renderMarkdown, type Summary } from "./reporter/plain-report";
+import { imageTag, renderMarkdown, type Summary } from "./reporter/plain-report";
 import { linked, say } from "./lib/console-link";
 import { newTotpSecret } from "./lib/totp";
 import { triageProblems } from "./lib/triage";
@@ -177,7 +177,7 @@ function printSummary(s: Summary) {
   log(bar);
   for (const e of s.globalErrors) log(` ! ${e}`);
   s.problems.forEach((p, i) => {
-    log(` ${i + 1}. [${p.severity.toUpperCase()}] ${p.area}: ${p.headline}`);
+    log(` ${i + 1}. [${p.severity.toUpperCase()}] ${p.area}: ${p.headline}${imageTag(p)}`);
     log(`    Journey: ${p.tests[0]}${p.tests.length > 1 ? ` (+${p.tests.length - 1} more)` : ""}`);
     if (p.failedStep) log(`    Step:    ${p.failedStep}`);
     for (const d of p.details.slice(0, 3)) log(`    ${d}`);

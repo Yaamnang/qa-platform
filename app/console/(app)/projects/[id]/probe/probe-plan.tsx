@@ -42,25 +42,25 @@ export function ProbePlanPanel({ projectId, version }: { projectId: string; vers
     }
   };
 
-  if (!state) return error ? <p className="mb-6 text-xs text-red-400">{error}</p> : null;
+  if (!state) return error ? <p className="mt-3 text-xs text-red-600">{error}</p> : null;
   if (state.probe === "builtin") {
-    return <p data-testid="probe-kind" data-probe="builtin" className="mb-6 text-xs text-ink-500">Built-in suite: this target is the stand-in.</p>;
+    return <p data-testid="probe-kind" data-probe="builtin" className="mt-3 text-xs text-ink-500">Runs the built-in test suite.</p>;
   }
   return (
-    <div data-testid="probe-kind" data-probe="ai" className="mb-6 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-ink-600">
+    <div data-testid="probe-kind" data-probe="ai" className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-ink-600">
       {state.plan ? (
         <>
           <span data-testid="probe-plan">
-            Using recorded plan ({state.plan.journeys.length} journeys, {state.plan.steps} steps). Replays with no model calls.
+            Replays the saved plan: {state.plan.journeys.length} journeys, {state.plan.steps} steps. No AI calls.
           </span>
           <Button variant="secondary" size="sm" onClick={replan} loading={clearing} data-testid="probe-replan">Re-plan</Button>
         </>
       ) : (
         <span data-testid="probe-plan">
-          {state.hasKey ? "AI Probe: the next run plans with Claude Haiku, then records the plan." : "AI Probe needs an Anthropic key or a recorded plan."}
+          {state.hasKey ? "First run: Claude Haiku plans what to test and the plan is saved. Later runs replay it." : "Needs an Anthropic key to plan the first run."}
         </span>
       )}
-      {error && <span className="text-xs text-red-400">{error}</span>}
+      {error && <span className="text-xs text-red-600">{error}</span>}
     </div>
   );
 }

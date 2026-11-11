@@ -105,6 +105,10 @@ alter table console_jobs add column if not exists summary jsonb;
 -- Written after a planning run and replayed with no model call; "Re-plan" sets it back to null.
 -- Steps hold locators, outcomes and fake test data only, never a secret.
 alter table console_projects add column if not exists probe_plan jsonb;
+-- The Probe tab's "Full access" switch: the Probe may save, upload and delete
+-- on this site. Off by default; an employee turns it on for a site they own
+-- or have permission to test. localhost is always allowed, without it.
+alter table console_projects add column if not exists full_access boolean not null default false;
 -- 'waiting': the run asked the employee for a login or a code and is paused.
 -- The check is dropped and added again so this file stays safe to rerun.
 alter table console_jobs drop constraint if exists console_jobs_status_check;
@@ -132,6 +136,21 @@ create table if not exists console_github_links (
   -- The GitHub-started job whose final commit status is not posted yet.
   pending_job_id    text
 );
+-- The "Check every new commit" switch. Added later; existing rows stay on.
+alter table console_github_links add column if not exists auto_check boolean not null default true;
+
+-- Probe problem images, one row per image: the page when a check failed,
+-- secret fields masked, never a sign-in step. n is the problem's image number.
+-- data is the JPEG or PNG as base64. The run's files are deleted from the
+-- server once they are in here, so this is the only copy.
+create table if not exists console_job_images (
+  job_id     text not null references console_jobs(id) on delete cascade,
+  n          integer not null check (n between 1 and 999),
+  mime       text not null check (mime in ('image/jpeg','image/png')),
+  data       text not null,
+  created_at bigint not null,
+  primary key (job_id, n)
+);
 
 create index if not exists console_challenges_employee_idx on console_challenges (employee_id);
 create index if not exists console_sessions_employee_idx   on console_sessions (employee_id);
@@ -145,5 +164,6 @@ alter table console_sessions   enable row level security;
 alter table console_projects   enable row level security;
 alter table console_jobs       enable row level security;
 alter table console_github_links enable row level security;
+alter table console_job_images enable row level security;
 
 commit;

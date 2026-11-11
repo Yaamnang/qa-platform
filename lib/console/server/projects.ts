@@ -4,8 +4,8 @@ import type { Job, JobOrigin, Project } from "../contract";
 import type { JobRecord, ProjectRecord } from "./records";
 
 /**
- * Rules about projects: what counts as a valid target, where a full QA run is
- * allowed, and what of a project or job a browser may see.
+ * Rules about projects: what counts as a valid target, which hosts are on the
+ * allow-list, and what of a project or job a browser may see.
  */
 
 /**
@@ -36,37 +36,17 @@ export function hostOf(targetUrl: string): string {
   return new URL(targetUrl).hostname.toLowerCase();
 }
 
-/**
- * Hostnames, without ports, from CONSOLE_QA_HOSTS. Read on every call so the
- * list is never stale.
- *
- * Unset means this machine only: localhost and 127.0.0.1. That is safe as a
- * default, because a QA run against your own machine can only touch your own
- * local stand-in. Any real server still has to be listed on purpose. Setting
- * the variable, even to an empty value, replaces the default entirely.
- */
-const DEFAULT_QA_HOSTS = "localhost,127.0.0.1";
-
-function qaHosts(): string[] {
-  return (process.env.CONSOLE_QA_HOSTS ?? DEFAULT_QA_HOSTS)
-    .split(",")
-    .map((host) => host.trim().toLowerCase())
-    .filter(Boolean);
-}
+/** The allow-list: this machine. A Probe here can only touch your own local stand-in. */
+const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
 /**
- * A full QA run uploads and deletes data, so it may only run against a host
- * someone deliberately listed in CONSOLE_QA_HOSTS, or this machine when the
- * variable is unset. Explore is read-only and needs no such list.
- *
- * Returns null when allowed, otherwise the reason, word for word what the 403 says.
+ * Is this workspace's host on the allow-list? There a run that nobody chose
+ * the access for (one started from GitHub) may change data, and the Full
+ * access test button starts without a confirm. Anywhere else a run only
+ * changes data when an employee pressed Full access test for it.
  */
-export function qaRunRefusal(targetUrl: string): string | null {
-  const host = hostOf(targetUrl);
-  const allowed = qaHosts();
-  if (allowed.includes(host)) return null;
-  const list = allowed.length ? `The list is: ${allowed.join(", ")}.` : "CONSOLE_QA_HOSTS is empty, so no host is allowed.";
-  return `A QA run uploads and deletes data, so it only runs against hosts listed in CONSOLE_QA_HOSTS. ${host} is not on that list. ${list}`;
+export function hostAllowsWrites(targetUrl: string): boolean {
+  return ALLOWED_HOSTS.has(hostOf(targetUrl));
 }
 
 /**
@@ -92,7 +72,8 @@ export function toProjectDto(project: ProjectRecord): Project {
     targetUrl: project.targetUrl,
     qaEmail: project.qaEmail,
     hasCredentials: project.qaPasswordEnc !== null && project.qaTotpSecretEnc !== null,
-    qaRunAllowed: qaRunRefusal(project.targetUrl) === null,
+    qaRunAllowed: hostAllowsWrites(project.targetUrl),
+    fullAccess: project.fullAccess,
     createdAt: project.createdAt,
     createdBy: project.createdBy,
   };

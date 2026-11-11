@@ -57,6 +57,12 @@ export type ProjectRecord = {
   createdAt: number;
   /** Email of the employee who added it. */
   createdBy: string;
+  /**
+   * The Probe may save, upload and delete on this site. Off until an employee
+   * turns it on for a site they own or have permission to test. This machine
+   * (localhost) always has it, see qaRunRefusal in projects.ts.
+   */
+  fullAccess: boolean;
 };
 
 /**
@@ -89,6 +95,8 @@ export type GithubLinkRecord = {
   etag: string | null;
   /** The GitHub-started job whose final commit status has not been posted yet. */
   pendingJobId: string | null;
+  /** The "Check every new commit" switch. Off: the poller leaves this workspace alone. */
+  autoCheck: boolean;
 };
 
 /** The fields that can change. Only the ones passed are written. */
@@ -98,6 +106,9 @@ export type GithubLinkPatch = Partial<Omit<GithubLinkRecord, "projectId">>;
 export type JobPatch = Partial<
   Pick<JobRecord, "status" | "startedAt" | "finishedAt" | "logTail" | "proposals" | "approvedProposalIds" | "result" | "error" | "explorer" | "messages" | "summary">
 >;
+
+/** A problem image of a finished Probe job, kept in the store, never on disk. n is the problem's image number. */
+export type JobImage = { mime: "image/jpeg" | "image/png"; bytes: Buffer };
 
 /** What a "Remember for this workspace" answer may change on a project. Only the fields passed are written. */
 export type ProjectCredentialsPatch = Partial<Pick<ProjectRecord, "qaEmail" | "qaPasswordEnc" | "qaTotpSecretEnc">>;
@@ -137,10 +148,11 @@ export function newSession(employeeId: string): ConsoleSession {
   };
 }
 
-export type NewProject = Omit<ProjectRecord, "id" | "createdAt">;
+export type NewProject = Omit<ProjectRecord, "id" | "createdAt" | "fullAccess">;
 
+/** Full access starts off, so a new workspace never changes data until someone turns it on. */
 export function newProject(input: NewProject): ProjectRecord {
-  return { id: `prj_${randomUUID().replace(/-/g, "").slice(0, 12)}`, ...input, createdAt: Date.now() };
+  return { id: `prj_${randomUUID().replace(/-/g, "").slice(0, 12)}`, ...input, createdAt: Date.now(), fullAccess: false };
 }
 
 export type NewJob = {

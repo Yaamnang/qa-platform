@@ -5,11 +5,11 @@ import type { ReactNode } from "react";
 import { ChevronRightIcon } from "@/components/icons";
 import { Card, formatDate } from "@/components/ui";
 import { formatAgo, formatDuration, jobDuration, useNow } from "../../../_components/format";
-import { JobStatusLabel } from "../../../_components/status";
+import { JOB_KIND_LABEL, JobStatusLabel } from "../../../_components/status";
 import type { WorkspaceJob } from "./workspace";
 
-const COLUMNS = "sm:grid sm:grid-cols-[7rem_minmax(0,1fr)_7rem_5rem_1rem] sm:items-center sm:gap-4";
-const COLUMNS_WITH_SOURCE = "sm:grid sm:grid-cols-[7rem_minmax(0,1fr)_7rem_7rem_5rem_1rem] sm:items-center sm:gap-4";
+const COLUMNS = "sm:grid sm:grid-cols-[5rem_8rem_minmax(0,1fr)_7rem_5rem_1rem] sm:items-center sm:gap-4";
+const COLUMNS_WITH_SOURCE = "sm:grid sm:grid-cols-[5rem_8rem_minmax(0,1fr)_7rem_7rem_5rem_1rem] sm:items-center sm:gap-4";
 
 /** Short form of a commit sha, as GitHub shows it. */
 export const shortSha = (sha: string) => sha.slice(0, 7);
@@ -24,7 +24,7 @@ export function GithubMarker({ job }: { job: WorkspaceJob }) {
   );
 }
 
-/** One kind of job, newest first, each row linking to its job page. */
+/** Runs of both kinds, newest first, each row linking to its job page. The History tab. */
 export function JobHistory({ jobs, empty, showSource = false }: { jobs: WorkspaceJob[]; empty: ReactNode; showSource?: boolean }) {
   const now = useNow(30_000);
   const columns = showSource ? COLUMNS_WITH_SOURCE : COLUMNS;
@@ -36,7 +36,7 @@ export function JobHistory({ jobs, empty, showSource = false }: { jobs: Workspac
       ) : (
         <>
           <div aria-hidden="true" className={`hidden border-b border-ink-100 px-5 py-2.5 text-xs font-medium text-ink-500 ${columns}`}>
-            <span>Status</span><span>Result</span>{showSource && <span>Source</span>}<span>Started</span><span>Duration</span><span />
+            <span>Kind</span><span>Status</span><span>Result</span>{showSource && <span>Source</span>}<span>Started</span><span>Duration</span><span />
           </div>
           <ul data-testid="job-history" className="divide-y divide-ink-100">
             {jobs.map((job) => {
@@ -45,6 +45,7 @@ export function JobHistory({ jobs, empty, showSource = false }: { jobs: Workspac
                 <li key={job.id}>
                   <Link href={`/console/jobs/${job.id}`} data-testid="job-row" data-job-id={job.id}
                     className={`group block space-y-1 px-5 py-3 text-sm transition-colors hover:bg-ink-100/60 focus-visible:bg-ink-100/60 focus-visible:outline-none sm:space-y-0 ${columns}`}>
+                    <span data-testid="job-row-kind" className="block font-medium text-ink-900">{JOB_KIND_LABEL[job.kind]}</span>
                     <span className="block text-ink-700"><JobStatusLabel job={job} /></span>
                     <span className="block truncate text-ink-600"><JobSummary job={job} /></span>
                     {showSource && <span className="block"><GithubMarker job={job} /></span>}

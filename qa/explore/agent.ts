@@ -243,9 +243,7 @@ function allowedControl(control: RawControl): boolean {
 
 /** Values that must never reach the model: every known secret, plus this run's own credentials. */
 function promptSecrets(options: AgentOptions): string[] {
-  return [...secretsToRedact(), options.credentials.password, options.credentials.totpSecret]
-    .filter((value) => typeof value === "string" && value.trim().length >= 6)
-    .sort((a, b) => b.length - a.length);
+  return secretsToRedact([options.credentials.password, options.credentials.totpSecret]);
 }
 
 function describeControl(control: RawControl): string {

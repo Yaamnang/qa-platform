@@ -20,6 +20,8 @@ const eslintConfig = defineConfig([
     "playwright-report/**",
     ".ai-cache/**",
     "qa/.ai-cache/**",
+    // The stand-in, being split into its own project.
+    "fake-client/**",
   ]),
 ]);
 

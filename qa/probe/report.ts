@@ -47,9 +47,10 @@ export function buildSummary(input: {
         failedStep: j.failedStep,
         tests: [j.name],
         evidence: {},
+        ...(j.image ? { image: { n: j.image, path: `images/${j.image}.jpg` } } : j.imageNote ? { imageNote: j.imageNote } : {}),
       };
     }),
-    notRun: counts.skipped ? `${counts.skipped} journey(s) skipped: they would change data, and this host is read-only.` : null,
+    notRun: notRunLine(input.journeys),
     warnings: input.notes.map((message) => ({ test: "AI Probe", message })),
     flaky: input.journeys.filter((j) => j.outcome === "flaky").map((j) => j.name),
     globalErrors: input.globalErrors.length || input.journeys.length ? input.globalErrors : ["The plan had no journeys that could run on this site."],
@@ -73,6 +74,17 @@ export function buildSummary(input: {
   };
 }
 
+/** Why journeys did not run: read-only skips, and CAPTCHAs nobody could answer. Null when all ran. */
+function notRunLine(journeys: JourneyResult[]): string | null {
+  const skipped = journeys.filter((j) => j.outcome === "skipped");
+  const blocked = skipped.filter((j) => j.blocked);
+  const readOnly = skipped.length - blocked.length;
+  const parts: string[] = [];
+  if (readOnly) parts.push(`${readOnly} journey(s) skipped: they would change data, and this host is read-only.`);
+  if (blocked.length) parts.push(`${blocked.length} journey(s) not tested. ${[...new Set(blocked.map((j) => j.blocked))].join(" ")}`);
+  return parts.join(" ") || null;
+}
+
 export function renderProbeMarkdown(s: ProbeSummary): string {
   const lines = [
     `# AI Probe: ${s.verdict}`,
@@ -88,9 +100,12 @@ export function renderProbeMarkdown(s: ProbeSummary): string {
     );
   }
   for (const e of s.globalErrors) lines.push("", `! ${e}`);
+  if (s.notRun) lines.push("", `> ${s.notRun}`);
   for (const j of s.journeys) {
     lines.push("", `## ${j.outcome.toUpperCase()} · ${j.name}`, "", `From ${j.start}${j.headline ? `. ${j.headline}.` : "."}`, "");
     for (const step of j.steps) lines.push(`- ${step.status}: ${step.title}${step.reason ? ` (${step.reason})` : ""}`);
+    if (j.image) lines.push("", `Image: [Image ${j.image}](images/${j.image}.jpg)`);
+    else if (j.imageNote) lines.push("", `Image: ${j.imageNote}`);
   }
   for (const w of s.warnings) lines.push("", `Note: ${w.message}`);
   return `${lines.join("\n")}\n`;

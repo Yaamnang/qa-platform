@@ -1,5 +1,5 @@
-// Shaders for /eclype. Everything is procedural: the moon surface is baked
-// once into an equirectangular normal/albedo map, the rest is computed live.
+// Shaders for the Eclype scene. Everything is procedural: the moon surface is
+// baked once into an equirectangular normal/albedo map, the rest is computed live.
 //
 // Staged reveal: each layer reads one 0-to-1 uniform that Eclype.jsx ramps in
 // turn (uBg, uMoon, uWaves, uZodiac). At 0 a layer adds nothing, at 1 it looks
@@ -54,8 +54,85 @@ export const fullscreenVertex = /* glsl */ `
 
 // ---------------------------------------------------------------- moon bake
 // A surface saturated with overlapping craters: their sharp rims knit into
-// the lacy, cellular relief that catches the eclipse light.
+// the lacy, cellular relief that catches the eclipse light. The slope of the
+// surface is added up crater by crater as it is built, so each texel needs
+// one pass instead of four (no finite differences).
 export const bakeFragment = /* glsl */ `
+  precision highp float;
+  varying vec2 vUv;
+  ${noise3}
+
+  // fbm with 3 octaves, for the warp and the albedo detail.
+  float fbm3(vec3 p) {
+    float v = 0.;
+    float a = .5;
+    for (int i = 0; i < 3; i++) {
+      v += a * vnoise(p);
+      p = p * 2.03 + vec3(1.7, 9.2, 3.1);
+      a *= .5;
+    }
+    return v;
+  }
+
+  // One layer of craters at scale k, weighted by weight: flat-ish bowl and
+  // sharp raised rim. Adds the layer's slope to grad and returns its albedo shift.
+  float craters(vec3 p, float k, float density, float seed, float weight, inout vec3 grad) {
+    vec3 q = p * k;
+    vec3 i = floor(q);
+    vec3 f = fract(q);
+    float albedo = 0.;
+    for (int x = -1; x <= 1; x++)
+    for (int y = -1; y <= 1; y++)
+    for (int z = -1; z <= 1; z++) {
+      vec3 g = vec3(float(x), float(y), float(z));
+      vec3 r = hash33(i + g + seed);
+      if (r.z > density) continue;
+      vec3 o = hash33(i + g + seed + 17.31);
+      vec3 c = g + .15 + .7 * o - f;
+      float rad = .26 + .3 * pow(fract(r.x * 13.7 + r.y * 7.1), 1.6);
+      float len = length(c);
+      float d = len / rad;
+      if (d > 1.7) continue;
+      // Height is (bowl + rim) * rad; these are its slopes along d.
+      float rim = exp(-(d - 1.) * (d - 1.) * 14.) * .16;
+      float dBowl = d < 1. ? 2.1 * d * (1. - d) : 0.;
+      float dRim = -28. * (d - 1.) * rim;
+      grad -= (dBowl + dRim) * k * weight * c / max(len, 1e-4);
+      albedo += rim * .5 - (1. - smoothstep(.2, 1., d)) * .06;
+    }
+    return albedo * weight;
+  }
+
+  void main() {
+    float lon = (vUv.x - .5) * 6.28318531;
+    float lat = (vUv.y - .5) * 3.14159265;
+    vec3 p = vec3(cos(lat) * cos(lon), sin(lat), cos(lat) * sin(lon));
+    vec3 w = p + (vec3(fbm3(p * 3.), fbm3(p * 3. + 5.2), fbm3(p * 3. + 11.7)) - .5) * .1;
+    // Basins down to small pocks. Weights fall with size so small craters add
+    // crisp detail without turning into clusters of dark holes.
+    vec3 grad = vec3(0.);
+    float shift = craters(w, 1.6, .35, 23., .7, grad)
+                + craters(w, 3.4, .4, 0., .8, grad)
+                + craters(w, 7., .32, 3., .38, grad)
+                + craters(w, 14., .34, 7., .17, grad)
+                + craters(w, 28., .34, 11., .08, grad);
+    vec3 tangential = grad - dot(grad, p) * p;
+    vec3 n = normalize(p - tangential * .23);
+
+    // Soft dark "seas" give the familiar, calm lunar face.
+    float maria = smoothstep(.42, .62, fbm(p * 1.5 + 2.));
+    float alb = mix(.9, .52, maria);
+    alb *= .92 + .16 * fbm3(p * 12.);
+    alb = clamp(alb + shift * .3, .3, 1.);
+    gl_FragColor = vec4(n * .5 + .5, alb);
+  }
+`;
+
+// The original bake, used when the scene refines to full quality: six
+// crater layers, fine grain, 5-octave noise, and the slope taken by finite
+// differences (four surface passes per texel). Slow, so it runs in thin
+// strips spread over many frames.
+export const bakeFragmentFull = /* glsl */ `
   precision highp float;
   varying vec2 vUv;
   ${noise3}
@@ -248,6 +325,7 @@ export const backgroundFragment = /* glsl */ `
   uniform float uTime;
   uniform float uDpr;
   uniform float uBg;
+  uniform float uOctaves;
   varying vec2 vWorld;
 
   float hash12(vec2 p) {
@@ -266,7 +344,9 @@ export const backgroundFragment = /* glsl */ `
     float v = 0.;
     float a = .5;
     mat2 m = mat2(1.6, 1.2, -1.2, 1.6);
+    // uOctaves is 4 at the start and 6 at full quality.
     for (int i = 0; i < 6; i++) {
+      if (float(i) >= uOctaves) break;
       v += a * noise(p);
       p = m * p;
       a *= .5;

@@ -13,17 +13,27 @@ import { formatAgo, useNow } from "../../../../_components/format";
 import { JobStatusLabel, StatusDot } from "../../../../_components/status";
 import { canRetry, InlineLoading, ListSkeleton, LoadError } from "../../../../_components/states";
 import { JobSummary, shortSha } from "../job-history";
-import { useWorkspace, type WorkspaceJob } from "../workspace";
+import { QueryFlag } from "../probe/github-test";
+import { useWorkspace, WorkspaceReady, type WorkspaceJob } from "../workspace";
 
 const POLL_MS = 15_000;
 
 /**
  * The GitHub tab. Three states: no token yet, connected without a repo, and
- * watching a branch. The console checks the branch about once a minute and
- * runs a Probe on each new commit, so this page polls the status to keep
- * "last checked" fresh.
+ * a repo and branch chosen. Then one switch, "Check every new commit", decides
+ * whether the server polls the branch and runs a Probe on each new commit.
+ * This page polls the status to keep "last checked" fresh.
  */
 export default function GithubPage() {
+  return (
+    <WorkspaceReady>
+      <GithubContent />
+    </WorkspaceReady>
+  );
+}
+
+/** The page itself. Only rendered once the workspace has loaded. */
+function GithubContent() {
   const { project, jobs, reload } = useWorkspace();
   const router = useRouter();
   const base = `/api/console/projects/${project.id}/github`;
@@ -32,6 +42,8 @@ export default function GithubPage() {
   const [loadError, setLoadError] = useState<{ text: string; retry: boolean } | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [picking, setPicking] = useState(false);
+  // Sent here by the Probe tab's GitHub code test (?from=code-test): go back there once connected.
+  const [fromCodeTest, setFromCodeTest] = useState(false);
 
   // A new GitHub-triggered run shows up as a new lastTriggeredAt: refresh the job list then.
   const lastTriggered = useRef<number | null | undefined>(undefined);
@@ -57,7 +69,7 @@ export default function GithubPage() {
         updateRef.current(r.github);
       } catch (err) {
         if (stopped) return;
-        if (isSignedOut(err)) return router.replace("/console/login");
+        if (isSignedOut(err)) return router.replace("/login");
         // After the first load, a failed poll keeps what is on screen and tries again later.
         if (!loaded) return setLoadError({ text: errorMessage(err, "Could not load the GitHub connection."), retry: canRetry(err) });
       }
@@ -86,7 +98,11 @@ export default function GithubPage() {
 
   let body: ReactNode;
   if (!github.connected) {
-    body = <NotConnected base={base} tokenUrl={github.tokenUrl} onChange={onChange} />;
+    const connected = (next: GithubLink) => {
+      onChange(next);
+      if (fromCodeTest && next.connected) router.push(`/console/projects/${project.id}/probe?github-test=1`);
+    };
+    body = <NotConnected base={base} tokenUrl={github.tokenUrl} onChange={connected} />;
   } else if (!github.repo || picking) {
     body = <PickRepo base={base} github={github} onChange={onChange} onCancel={github.repo ? () => setPicking(false) : undefined} />;
   } else {
@@ -95,6 +111,10 @@ export default function GithubPage() {
 
   return (
     <>
+      <QueryFlag name="from" value="code-test" onFound={() => setFromCodeTest(true)} />
+      {fromCodeTest && !github.connected && (
+        <p data-testid="github-test-from-note" className="text-sm text-ink-700">Connect GitHub to run a code test.</p>
+      )}
       {body}
       {(github.repo || runs.length > 0) && <GithubRuns runs={runs} />}
       <p data-testid="github-access-note" className="flex items-start gap-1.5 text-xs text-ink-500">
@@ -130,7 +150,7 @@ function NotConnected({ base, tokenUrl, onChange }: { base: string; tokenUrl: st
       setToken("");
       onChange(r.github);
     } catch (err) {
-      if (isSignedOut(err)) return router.replace("/console/login");
+      if (isSignedOut(err)) return router.replace("/login");
       // 422: GitHub refused the token or it lacks access. The API says which.
       setError(errorMessage(err, "Could not save the token. Try again."));
       setSaving(false);
@@ -140,18 +160,11 @@ function NotConnected({ base, tokenUrl, onChange }: { base: string; tokenUrl: st
   return (
     <Card title="Connect GitHub">
       <div data-testid="github-not-connected" className="space-y-6">
-        <p className="max-w-prose text-sm text-ink-700">
-          Connect your GitHub account and pick a branch to watch. The console checks the branch about once a minute,
-          runs a Probe on each new commit, and marks the commit as passed or failed.
-        </p>
-
         <div className="space-y-2">
           <a href={tokenUrl} target="_blank" rel="noreferrer" data-testid="github-create-token" className={buttonStyles("secondary")}>
             Create token on GitHub
           </a>
-          <p className="text-xs text-ink-500">
-            GitHub opens with the name and permission already filled in. Click Generate token and copy it.
-          </p>
+          <p className="text-xs text-ink-500">Name and permission come filled in.</p>
         </div>
 
         <form onSubmit={save} noValidate autoComplete="off" data-testid="github-token-form" className="max-w-md space-y-4">
@@ -166,7 +179,7 @@ function NotConnected({ base, tokenUrl, onChange }: { base: string; tokenUrl: st
 }
 
 // ---------------------------------------------------------------------------
-// Disconnect, shared by states 3 and 4
+// Disconnect, shared by the two connected states
 // ---------------------------------------------------------------------------
 
 function Disconnect({ base, onChange, small = false }: { base: string; onChange: (g: GithubLink) => void; small?: boolean }) {
@@ -182,7 +195,7 @@ function Disconnect({ base, onChange, small = false }: { base: string; onChange:
       const r = await api<{ github: GithubLink }>(base, { method: "DELETE" });
       onChange(r.github);
     } catch (err) {
-      if (isSignedOut(err)) return router.replace("/console/login");
+      if (isSignedOut(err)) return router.replace("/login");
       setError(errorMessage(err, "Could not disconnect. Try again."));
       setBusy(false);
     }
@@ -197,7 +210,7 @@ function Disconnect({ base, onChange, small = false }: { base: string; onChange:
   }
   return (
     <div data-testid="github-disconnect-confirm" className="w-full space-y-3 rounded-lg border border-ink-200 p-4">
-      <p className="text-sm text-ink-700">Disconnect GitHub? The console stops watching the branch until you connect again.</p>
+      <p className="text-sm text-ink-700">Disconnect GitHub? The token and the repo are forgotten.</p>
       {error && <Notice kind="error" testId="github-disconnect-error">{error}</Notice>}
       <div className="flex gap-2">
         <Button variant="danger" size="sm" onClick={disconnect} loading={busy} data-testid="github-disconnect-yes">Disconnect</Button>
@@ -234,7 +247,7 @@ function PickRepo({ base, github, onChange, onCancel }: {
       .then((r) => !cancelled && setRepos(r.repos))
       .catch((err) => {
         if (cancelled) return;
-        if (isSignedOut(err)) router.replace("/console/login");
+        if (isSignedOut(err)) router.replace("/login");
         else setLoadError(errorMessage(err, "Could not load your repositories."));
       });
     return () => {
@@ -267,7 +280,7 @@ function PickRepo({ base, github, onChange, onCancel }: {
       });
       onChange(r.github);
     } catch (err) {
-      if (isSignedOut(err)) return router.replace("/console/login");
+      if (isSignedOut(err)) return router.replace("/login");
       setSaveError(errorMessage(err, "Could not save. Try again."));
       setSaving(false);
     }
@@ -329,7 +342,7 @@ function PickRepo({ base, github, onChange, onCancel }: {
         {saveError && <Notice kind="error" testId="github-save-error">{saveError}</Notice>}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" loading={saving} disabled={!picked} data-testid="github-watch">Watch this branch</Button>
+          <Button type="submit" loading={saving} disabled={!picked} data-testid="github-watch">Save</Button>
           {onCancel && <Button variant="ghost" onClick={onCancel} disabled={saving} data-testid="github-pick-cancel">Cancel</Button>}
           <div className="ml-auto"><Disconnect base={base} onChange={onChange} small /></div>
         </div>
@@ -339,7 +352,7 @@ function PickRepo({ base, github, onChange, onCancel }: {
 }
 
 // ---------------------------------------------------------------------------
-// State 4: watching a branch
+// State 4: repo and branch chosen
 // ---------------------------------------------------------------------------
 
 function Watching({ base, github, onChange, onPick, onStarted }: {
@@ -367,7 +380,7 @@ function Watching({ base, github, onChange, onPick, onStarted }: {
         onStarted();
       }
     } catch (err) {
-      if (isSignedOut(err)) return router.replace("/console/login");
+      if (isSignedOut(err)) return router.replace("/login");
       setCheckError(errorMessage(err, "Could not check the branch. Try again."));
     } finally {
       setChecking(false);
@@ -377,13 +390,15 @@ function Watching({ base, github, onChange, onPick, onStarted }: {
   const ago = (ms: number | null) => (ms === null ? "Never" : now ? formatAgo(ms, now) : formatDate(ms));
 
   return (
-    <Card title="Watching"
+    <Card title="Connected"
       action={
         <StatusDot tone="pass" testId="github-account" className="text-sm text-ink-700">
           <span className="font-mono text-ink-900">{github.account ?? "–"}</span>
         </StatusDot>
       }>
-      <dl data-testid="github-watching" className="grid gap-4 text-sm sm:grid-cols-2">
+      <AutoCheck base={base} on={github.autoCheck} onChange={onChange} />
+
+      <dl data-testid="github-watching" className="mt-5 grid gap-4 border-t border-ink-200 pt-5 text-sm sm:grid-cols-2">
         <Fact label="Repository"><span data-testid="github-repo-name" className="font-mono text-[13px]">{github.repo}</span></Fact>
         <Fact label="Branch"><span data-testid="github-branch-name" className="font-mono text-[13px]">{github.branch}</span></Fact>
         <Fact label="Last checked">
@@ -412,6 +427,58 @@ function Watching({ base, github, onChange, onPick, onStarted }: {
         <div className="sm:ml-auto"><Disconnect base={base} onChange={onChange} /></div>
       </div>
     </Card>
+  );
+}
+
+/**
+ * The "Check every new commit" switch. Same pattern as Full access on the
+ * Probe tab: a button with role="switch", saved straight away, an inline error
+ * under it if the save fails. Off keeps the connection; only the poller stops.
+ */
+function AutoCheck({ base, on, onChange }: { base: string; on: boolean; onChange: (g: GithubLink) => void }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(autoCheck: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ github: GithubLink }>(base, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ autoCheck }),
+      });
+      onChange(r.github);
+    } catch (err) {
+      if (isSignedOut(err)) return router.replace("/login");
+      // On Supabase without the new column, the API says which SQL to run.
+      setError(errorMessage(err, "Could not save. Try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div data-testid="github-auto-check-row">
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" role="switch" aria-checked={on} aria-labelledby="github-auto-check-label"
+          aria-describedby="github-auto-check-state" aria-busy={busy} disabled={busy}
+          onClick={() => save(!on)} data-testid="github-auto-check"
+          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 disabled:cursor-not-allowed disabled:opacity-50 ${on ? "bg-brand-600" : "bg-ink-300"}`}>
+          <span aria-hidden="true" className={`size-4 rounded-full bg-white transition-transform ${on ? "translate-x-[18px]" : "translate-x-0.5"}`} />
+        </button>
+        <span id="github-auto-check-label" className="text-sm font-medium text-ink-900">Check every new commit</span>
+        <span id="github-auto-check-state" data-testid="github-auto-check-state" className="text-xs text-ink-500">
+          {busy
+            ? "Saving…"
+            : on
+              ? "A Probe runs on each new commit and the result shows on the commit in GitHub."
+              : "Off. Nothing runs by itself."}
+        </span>
+      </div>
+      {error && <Notice kind="error" className="mt-3" testId="github-auto-check-error">{error}</Notice>}
+    </div>
   );
 }
 

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { answerAsk, openAsk, parseAnswer, systemMessage, withLiveChat } from "@/lib/console/server/chat";
+import { answerAsk, holdRemember, openAsk, parseAnswer, systemMessage, withLiveChat } from "@/lib/console/server/chat";
 import { ConsoleKeyError, encryptSecret } from "@/lib/console/server/encryption";
 import { jsonError, requireEmployee } from "@/lib/console/server/http";
 import { toJobDto } from "@/lib/console/server/projects";
@@ -15,6 +15,9 @@ import { getJob, updateProjectCredentials } from "@/lib/console/server/store";
 //
 // remember: true also saves a login or setup key on the workspace, encrypted
 // like the fields on the New workspace form, for later and unattended runs.
+// Only once the run reports that sign-in worked: until then the encrypted
+// values wait in server memory (chat.ts holdRemember), and they are dropped
+// if the job ends first, so a mistyped password is never stored.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { denied } = await requireEmployee(req);
   if (denied) return denied;
@@ -50,8 +53,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   if (!answerAsk(job.id, askId, values)) return jsonError(409, "The run is no longer waiting for this answer.");
 
   if (remembered) {
-    await updateProjectCredentials(job.projectId, remembered);
-    systemMessage(job.id, "password" in values ? "Login saved for this workspace." : "Authenticator key saved for this workspace.");
+    const patch = remembered;
+    const what = "password" in values ? "Login" : "Authenticator key";
+    if (holdRemember(job.id, { what, save: () => updateProjectCredentials(job.projectId, patch) })) {
+      systemMessage(job.id, `${what} will be saved for this workspace once sign-in works.`);
+    }
   } else if (rememberError) {
     systemMessage(job.id, `Not saved for this workspace: ${rememberError}`);
   }

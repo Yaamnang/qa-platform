@@ -56,7 +56,7 @@ export default function ConsoleSetupPage() {
 
   return (
     <AuthCard title="Set up your authenticator" wide
-      footer={<Link href="/console/login" data-testid="setup-back" className="font-medium text-brand-600 hover:text-brand-700">Back to sign in</Link>}>
+      footer={<Link href="/login" data-testid="setup-back" className="font-medium text-brand-600 hover:text-brand-700">Back to sign in</Link>}>
       {loadError ? (
         <Notice kind="error" testId="setup-load-error">{loadError}</Notice>
       ) : !setup ? (

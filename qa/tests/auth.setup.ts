@@ -18,7 +18,7 @@ test("sign in as the QA bot with password + one-time code", { tag: ["@auth", "@l
 
   await test.step("Enter email and password", async () => {
     if (!config.password) {
-      await page.goto("/login");
+      await page.goto("/fake/login");
       await page.getByLabel("Email").waitFor();
       const login = await askLogin(`The sign-in page at ${new URL(page.url()).host} is asking for the QA account's email and password.`);
       // Shared with the later test workers of this run, encrypted. Never logged.

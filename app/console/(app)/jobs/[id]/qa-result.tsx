@@ -1,6 +1,7 @@
 import type { Job, RunProblem } from "@/lib/console/contract";
 import { formatDuration } from "../../../_components/format";
 import { DOT_COLOUR, SeverityLabel, type Tone } from "../../../_components/status";
+import { ReportDownload } from "./report-download";
 
 type Result = NonNullable<Job["result"]>;
 
@@ -25,18 +26,21 @@ const bySeverity = (a: RunProblem, b: RunProblem) =>
   (SEVERITY_ORDER[a.severity.toLowerCase()] ?? 4) - (SEVERITY_ORDER[b.severity.toLowerCase()] ?? 4);
 
 /** A finished QA run: the verdict first, then the counts, then each problem. */
-export function QaResult({ result }: { result: Result }) {
+export function QaResult({ result, jobId }: { result: Result; jobId?: string }) {
   const v = VERDICT[result.verdict] ?? VERDICT.ERROR;
   const problems = [...result.problems].sort(bySeverity);
   return (
     <>
       <section aria-label="Verdict" data-testid="qa-result" className="mb-8 overflow-hidden rounded-xl border border-ink-200 bg-white">
         <div className="px-6 pb-6 pt-7">
-          <p data-testid="qa-verdict" data-verdict={result.verdict}
-            className={`flex items-center gap-4 text-6xl font-semibold leading-none tracking-tight ${v.text}`}>
-            <span aria-hidden="true" className={`size-5 shrink-0 rounded-full ${DOT_COLOUR[v.tone]}`} />
-            {result.verdict}
-          </p>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <p data-testid="qa-verdict" data-verdict={result.verdict}
+              className={`flex items-center gap-4 text-6xl font-semibold leading-none tracking-tight ${v.text}`}>
+              <span aria-hidden="true" className={`size-5 shrink-0 rounded-full ${DOT_COLOUR[v.tone]}`} />
+              {result.verdict}
+            </p>
+            {jobId && <ReportDownload jobId={jobId} />}
+          </div>
           <p data-testid="qa-summary" className="mt-4 text-base text-ink-700">{summary(result)}</p>
         </div>
         <dl data-testid="qa-counts" className="grid grid-cols-2 border-t border-ink-200 sm:grid-cols-5 sm:divide-x sm:divide-ink-200">
@@ -60,7 +64,7 @@ export function QaResult({ result }: { result: Result }) {
         <section aria-labelledby="problems-heading" className="mb-8">
           <h2 id="problems-heading" className="mb-4 text-[15px] font-semibold text-ink-900">Problems</h2>
           <ol data-testid="problem-list" className="space-y-4">
-            {problems.map((p, i) => <ProblemCard key={`${i}-${p.headline}`} problem={p} index={i + 1} />)}
+            {problems.map((p, i) => <ProblemCard key={`${i}-${p.headline}`} problem={p} index={i + 1} jobId={jobId} />)}
           </ol>
         </section>
       )}
@@ -80,7 +84,7 @@ function Count({ label, value, tone, testId }: { label: string; value: number; t
   );
 }
 
-function ProblemCard({ problem: p, index }: { problem: RunProblem; index: number }) {
+function ProblemCard({ problem: p, index, jobId }: { problem: RunProblem; index: number; jobId?: string }) {
   return (
     <li data-testid="problem-card" className="rounded-xl border border-ink-200 bg-white p-5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
@@ -103,6 +107,17 @@ function ProblemCard({ problem: p, index }: { problem: RunProblem; index: number
           {p.details.map((d, i) => <li key={i} className="break-words">{d}</li>)}
         </ul>
       )}
+
+      {jobId && p.image ? (
+        <p className="mt-3 text-sm">
+          <a href={`/api/console/jobs/${encodeURIComponent(jobId)}/images/${p.image}`} target="_blank" rel="noopener noreferrer"
+            data-testid="problem-image" className="text-brand-600 underline-offset-2 hover:underline">
+            Image {p.image}
+          </a>
+        </p>
+      ) : p.imageNote ? (
+        <p data-testid="problem-image-note" className="mt-3 text-xs text-ink-500">{p.imageNote}</p>
+      ) : null}
 
       {p.tests.length > 0 && (
         <div className="mt-3 text-xs text-ink-500">

@@ -96,7 +96,7 @@ export default function SignupPage() {
     <AuthLayout
       title="Create your staff account"
       subtitle="For Eclypse employees. It takes about a minute, and you will need an authenticator app on your phone."
-      footer={<>Already have an account? <Link href="/login" className="font-medium text-brand-600 hover:text-brand-700">Sign in</Link></>}
+      footer={<>Already have an account? <Link href="/fake/login" className="font-medium text-brand-600 hover:text-brand-700">Sign in</Link></>}
     >
       {error && <Notice kind="error" className="mb-5">{error}</Notice>}
       <form onSubmit={submit} noValidate className="space-y-5">

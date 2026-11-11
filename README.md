@@ -8,8 +8,8 @@ The design document is [`docs/DESIGN.pdf`](docs/DESIGN.pdf).
 
 There are two apps in one project.
 
-- **The QA console** (`/console`): what Eclypse engineers use. Add a website, press **Explore** or **Probe**, watch the robot's browser live, chat with it, read the result.
-- **The stand-in** (`/login`): a small copy of an AI platform for pharma teams. The robot practises on it. It has switches that break it on purpose, so you can see the robot catch real bugs.
+- **The QA console** (`/login`, then `/console`): what Eclypse engineers use. Add a website, press **Explore** or **Probe**, watch the robot's browser live, chat with it, read the result.
+- **The stand-in** (`/fake/login`): a small copy of an AI platform for pharma teams. The robot practises on it. It has switches that break it on purpose, so you can see the robot catch real bugs.
 
 ## Run the app (one command)
 
@@ -20,9 +20,9 @@ npm install
 npm run demo
 ```
 
-This builds and starts the app at http://localhost:3000 and prints an email, a password and a sign-in code. Open http://localhost:3000/console/login, sign in, open the ready workspace and press **Probe** to watch the robot test the stand-in live.
+This builds and starts the app at http://localhost:3000 and prints an email, a password and a sign-in code. Open http://localhost:3000/login, sign in, open the ready workspace and press **Probe** to watch the robot test the stand-in live.
 
-The stand-in platform itself is at http://localhost:3000/login.
+The stand-in platform itself is at http://localhost:3000/fake/login.
 
 ## Run the tests (terminal only)
 
@@ -54,7 +54,7 @@ Results are saved in [`results/`](results/). One of the 10 is a page that is slo
 | **Probe** | Uses the site like a real user and ends on PASS or FAIL. On our stand-in it runs the fixed test suite. On any other site, Claude plans the journeys once and later runs replay them without AI. |
 | **GitHub** | Watches a branch and runs a Probe on every new commit, then marks the commit pass or fail. |
 
-When a run reaches a sign-in page, it asks for your login and code in the job chat. Your answers go straight to the browser, never to Claude. On sites that are not on your allow-list, nothing that saves or deletes is ever sent.
+When a run reaches a sign-in page, it asks for your login and code in the job chat. Your answers go straight to the browser, never to Claude. Unless the workspace has Full access turned on, nothing that saves or deletes is ever sent.
 
 ## Use a real database (optional)
 
@@ -68,9 +68,9 @@ npm run admin -- setup --email you@eclypse.ai --name "Your Name"
 npm run dev
 ```
 
-4. Open `http://localhost:3000/console/login` and sign in with the password it printed.
+4. Open `http://localhost:3000/login` and sign in with the password it printed.
 
-Add or remove engineers with `npm run admin -- add` / `list` / `remove`.
+Add or remove engineers with `npm run admin -- add` / `list` / `remove`, or in the browser at `/admin`. The admin portal is off until you run `npm run admin-key -- --email you@eclypse.ai`, which writes `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `ADMIN_TOTP_SECRET` to `.env.local` and shows a QR code for your phone. Signing in to `/admin` takes the password and the six-digit code from that phone. Three wrong tries close it for 15 minutes.
 
 ## Put it on a server
 
@@ -90,7 +90,6 @@ All optional. The full list is in `.env.example`.
 |---|---|
 | `STORE` | Empty: keep data in memory. `supabase`: use the database. |
 | `ANTHROPIC_API_KEY` | Lets Claude Haiku drive Explore, plan Probes and write job summaries. |
-| `CONSOLE_QA_HOSTS` | Sites where a Probe may save and delete. Everything else is read-only. |
 | `CONSOLE_PUBLIC_URL` | The console's public address, used in links on GitHub commits. |
 | `CONSOLE_SECRET_KEY` | Encrypts saved logins and GitHub tokens. |
 

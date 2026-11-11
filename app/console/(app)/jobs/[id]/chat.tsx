@@ -18,22 +18,34 @@ const TIME = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digi
  * questions. An open question shows a form for exactly that answer instead of
  * the message box. Secret inputs are cleared the moment they are sent, and the
  * answer goes only to the run: the chat shows "Login provided", never the value.
+ * While the run waits for a login or a code, the message box stays locked, so
+ * a password cannot go into the stored chat by mistake.
  */
 export function JobChat({ job, onChange, className = "" }: Props) {
   const active = isActive(job.status);
   const messages = job.messages ?? [];
   const open = active ? [...messages].reverse().find((m) => m.ask && !m.ask.answered && !m.ask.expired)?.ask : undefined;
-
-  if (!active && messages.length === 0) return null;
+  const signingIn = open?.kind === "login" || open?.kind === "code";
+  const showBox = job.kind === "explore" && (!open || signingIn);
 
   return (
     <section aria-label="Chat" data-testid="job-chat"
-      className={`flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-white ${className}`}>
-      <div className="border-b border-ink-200 px-5 py-3 text-sm font-medium text-ink-700">Chat</div>
+      className={`flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-white shadow-sm ${className}`}>
+      <div className="flex items-center justify-between border-b border-ink-200 px-5 py-3">
+        <span className="text-sm font-semibold text-ink-900">Chat</span>
+        {active && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-ink-500">
+            <span aria-hidden="true" className="size-1.5 animate-pulse rounded-full bg-brand-500" />
+            {open ? "Waiting for you" : "Live"}
+          </span>
+        )}
+      </div>
       <MessageList messages={messages} />
-      {active && (
-        <div className="border-t border-ink-200 p-4">
-          {open ? <AskForm key={open.id} ask={open} job={job} onChange={onChange} /> : <MessageBox job={job} onChange={onChange} />}
+      {/* A question always gets its form. The free message box is Explore only: Probe follows its saved plan and never reads messages. */}
+      {active && (open || showBox) && (
+        <div className="space-y-4 border-t border-ink-200 bg-ink-50 p-4">
+          {open && <AskForm key={open.id} ask={open} job={job} onChange={onChange} />}
+          {showBox && <MessageBox job={job} onChange={onChange} locked={signingIn} />}
         </div>
       )}
     </section>
@@ -55,7 +67,7 @@ function MessageList({ messages }: { messages: ChatMessage[] }) {
         const el = e.currentTarget;
         atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
       }}
-      className="min-h-48 max-h-[28rem] flex-1 space-y-3 overflow-y-auto bg-ink-50 px-5 py-4 text-sm focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-500">
+      className="min-h-48 max-h-[28rem] flex-1 space-y-3 overflow-y-auto px-5 py-4 text-sm lg:max-h-none lg:min-h-0 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-500">
       {messages.length === 0 && <li data-testid="job-chat-empty" className="text-ink-500">No messages yet.</li>}
       {messages.map((m) => <Message key={m.id} message={m} />)}
     </ol>
@@ -75,7 +87,7 @@ function Message({ message: m }: { message: ChatMessage }) {
   return (
     <li data-testid="job-chat-message" data-from={m.from} className={`flex flex-col gap-1 ${mine ? "items-end" : "items-start"}`}>
       <div className={`max-w-[85%] whitespace-pre-wrap break-words rounded-lg px-3 py-2 ${
-        mine ? "bg-brand-100 text-ink-900" : "border border-ink-200 bg-white text-ink-800"
+        mine ? "bg-brand-100 text-ink-900" : "bg-ink-100 text-ink-800"
       }`}>
         {m.text}
         {m.ask && (
@@ -103,7 +115,7 @@ function useSend(job: Job, onChange: (job: Job) => void) {
       onChange(r.job);
       return true;
     } catch (err) {
-      if (isSignedOut(err)) router.replace("/console/login");
+      if (isSignedOut(err)) router.replace("/login");
       else setError(errorMessage(err, "Could not reach the console. Try again."));
       return false;
     } finally {
@@ -242,15 +254,19 @@ function TextForm({ ask, job, onChange }: { ask: ChatAsk; job: Job; onChange: (j
   );
 }
 
-/** Free text while the job runs, for example "look at the settings page". The explorer reads it before its next step. */
-function MessageBox({ job, onChange }: { job: Job; onChange: (job: Job) => void }) {
+/**
+ * Free text while the job runs, for example "look at the settings page". The
+ * explorer reads it before its next step. Stored as written, so locked while
+ * the run waits for a sign-in (the server refuses it then too).
+ */
+function MessageBox({ job, onChange, locked }: { job: Job; onChange: (job: Job) => void; locked: boolean }) {
   const id = useId();
   const { send, busy, error } = useSend(job, onChange);
   const [text, setText] = useState("");
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!text.trim()) return;
+    if (locked || !text.trim()) return;
     if (await send("messages", { text })) setText("");
   }
 
@@ -259,11 +275,13 @@ function MessageBox({ job, onChange }: { job: Job; onChange: (job: Job) => void 
       <div className="flex items-end gap-2">
         <div className="min-w-0 flex-1">
           <Field id={`${id}-message`} label="Message the run" value={text} onChange={(e) => setText(e.target.value)}
-            data-testid="job-chat-message-input" />
+            disabled={locked} data-testid="job-chat-message-input" />
         </div>
-        <Button type="submit" loading={busy} loadingText="Sending…" disabled={!text.trim()} data-testid="job-chat-message-submit">Send</Button>
+        <Button type="submit" loading={busy} loadingText="Sending…" disabled={locked || !text.trim()} data-testid="job-chat-message-submit">Send</Button>
       </div>
+      {locked && <p className="text-xs font-medium text-ink-700">Answer the sign-in form above first.</p>}
       <FormError text={error} testId="job-chat-message-error" />
+      <p className="text-xs text-ink-500">Do not type passwords here. The run asks for them in a separate form.</p>
     </form>
   );
 }

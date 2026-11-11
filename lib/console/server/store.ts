@@ -13,6 +13,7 @@ import {
   type EmployeeSummary,
   type GithubLinkPatch,
   type GithubLinkRecord,
+  type JobImage,
   type JobPatch,
   type JobRecord,
   type NewJob,
@@ -63,6 +64,8 @@ export type ConsoleBackend = {
   createProject(input: NewProject): Promise<ProjectRecord>;
   /** Saves a QA login or authenticator key an employee gave in a job's chat with "Remember for this workspace". */
   updateProjectCredentials(id: string, patch: ProjectCredentialsPatch): Promise<void>;
+  /** The workspace's "Full access" switch on the Probe tab. */
+  setProjectFullAccess(id: string, fullAccess: boolean): Promise<void>;
   createJob(input: NewJob): Promise<JobRecord>;
   getJob(id: string): Promise<JobRecord | undefined>;
   /** Newest first. */
@@ -79,6 +82,10 @@ export type ConsoleBackend = {
   patchGithubLink(projectId: string, patch: GithubLinkPatch): Promise<GithubLinkRecord>;
   /** Forgets the token and the repo. */
   deleteGithubLink(projectId: string): Promise<void>;
+  /** Stores problem image n of a job, replacing one with the same number. */
+  saveJobImage(jobId: string, n: number, image: JobImage): Promise<void>;
+  /** Problem image n of a job, or null when it was not saved. */
+  getJobImage(jobId: string, n: number): Promise<JobImage | null>;
 };
 
 // ---------------------------------------------------------------------------
@@ -93,6 +100,8 @@ type ConsoleDb = {
   jobs: Map<string, JobRecord>;
   /** Keyed by project id: one GitHub connection per workspace. */
   githubLinks: Map<string, GithubLinkRecord>;
+  /** Keyed by "<job id>:<n>". Optional because a store kept across a hot reload predates it. */
+  jobImages?: Map<string, JobImage>;
 };
 
 /**
@@ -117,6 +126,7 @@ function seed(): ConsoleDb {
     projects: new Map(),
     jobs: new Map(),
     githubLinks: new Map(),
+    jobImages: new Map(),
   };
   const email = process.env.SEED_CONSOLE_EMAIL?.trim();
   const password = process.env.SEED_CONSOLE_PASSWORD;
@@ -151,14 +161,8 @@ const mem = (): ConsoleDb => (globalForConsole.__eclypseConsoleDb ??= seed());
  */
 const copy = <T>(value: T): T => structuredClone(value);
 
-/**
- * Employees are managed with `npm run admin`, a terminal command, so a
- * separate process from the server. This store lives inside the server's own
- * process, where no other process can reach it, so the command is Supabase
- * only and these two methods exist just to keep the interface complete.
- */
-const NOT_IN_MEMORY =
-  "Managing employees is not available on the in-memory store. Locally, npm run demo creates the employee; with STORE=supabase, use npm run admin.";
+const jobImages = (): Map<string, JobImage> => (mem().jobImages ??= new Map());
+const copyImage = (image: JobImage): JobImage => ({ mime: image.mime, bytes: Buffer.from(image.bytes) });
 
 function emptyGithubLink(projectId: string): GithubLinkRecord {
   return {
@@ -172,6 +176,7 @@ function emptyGithubLink(projectId: string): GithubLinkRecord {
     lastTriggeredAt: null,
     etag: null,
     pendingJobId: null,
+    autoCheck: true,
   };
 }
 
@@ -194,11 +199,25 @@ const memoryBackend: ConsoleBackend = {
     const employee = mem().employees.get(id);
     if (employee) Object.assign(employee, patch);
   },
+  // Used by the /admin portal, which runs inside this process. `npm run admin`
+  // is a separate process and cannot reach this store, so it is Supabase only.
   async listEmployees() {
-    throw new Error(NOT_IN_MEMORY);
+    return [...mem().employees.values()]
+      .map(({ id, email, displayName, totpConfirmed, createdAt }) => ({ id, email, displayName, totpConfirmed, createdAt }))
+      .sort((a, b) => a.createdAt - b.createdAt);
   },
-  async deleteEmployee() {
-    throw new Error(NOT_IN_MEMORY);
+  async deleteEmployee(id) {
+    const db = mem();
+    let sessionsEnded = 0;
+    for (const [key, session] of db.sessions) {
+      if (session.employeeId === id) {
+        db.sessions.delete(key);
+        sessionsEnded++;
+      }
+    }
+    for (const [key, challenge] of db.challenges) if (challenge.employeeId === id) db.challenges.delete(key);
+    db.employees.delete(id);
+    return { sessionsEnded };
   },
   async createChallenge(employeeId) {
     const challenge = newChallenge(employeeId);
@@ -249,6 +268,10 @@ const memoryBackend: ConsoleBackend = {
     const project = mem().projects.get(id);
     if (project) Object.assign(project, copy(patch));
   },
+  async setProjectFullAccess(id, fullAccess) {
+    const project = mem().projects.get(id);
+    if (project) project.fullAccess = fullAccess;
+  },
   async createJob(input) {
     const job = newJob(input);
     mem().jobs.set(job.id, copy(job));
@@ -290,6 +313,13 @@ const memoryBackend: ConsoleBackend = {
   async deleteGithubLink(projectId) {
     mem().githubLinks.delete(projectId);
   },
+  async saveJobImage(jobId, n, image) {
+    jobImages().set(`${jobId}:${n}`, copyImage(image));
+  },
+  async getJobImage(jobId, n) {
+    const image = jobImages().get(`${jobId}:${n}`);
+    return image ? copyImage(image) : null;
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -298,11 +328,11 @@ const memoryBackend: ConsoleBackend = {
 
 const backend: ConsoleBackend = isSupabaseEnabled() ? supabaseConsoleBackend : memoryBackend;
 
-// listEmployees and deleteEmployee are left out on purpose. Only the terminal
-// command uses them, and it calls the Supabase backend directly. Not exporting
-// them here means no route can ever list or remove employees, which keeps the
-// decision that employees are managed from the terminal, not from a web page.
-
+// listEmployees and deleteEmployee are only for managing employees: the /admin
+// portal (app/api/admin, behind lib/admin/auth.ts) and `npm run admin`. No
+// console route may use them.
+export const listEmployees: ConsoleBackend["listEmployees"] = () => backend.listEmployees();
+export const deleteEmployee: ConsoleBackend["deleteEmployee"] = (id) => backend.deleteEmployee(id);
 export const findEmployeeByEmail: ConsoleBackend["findEmployeeByEmail"] = (e) => backend.findEmployeeByEmail(e);
 export const getEmployee: ConsoleBackend["getEmployee"] = (id) => backend.getEmployee(id);
 export const createEmployee: ConsoleBackend["createEmployee"] = (i) => backend.createEmployee(i);
@@ -319,6 +349,7 @@ export const getProject: ConsoleBackend["getProject"] = (id) => backend.getProje
 export const createProject: ConsoleBackend["createProject"] = (i) => backend.createProject(i);
 export const updateProjectCredentials: ConsoleBackend["updateProjectCredentials"] = (id, p) =>
   backend.updateProjectCredentials(id, p);
+export const setProjectFullAccess: ConsoleBackend["setProjectFullAccess"] = (id, on) => backend.setProjectFullAccess(id, on);
 export const createJob: ConsoleBackend["createJob"] = (i) => backend.createJob(i);
 export const getJob: ConsoleBackend["getJob"] = (id) => backend.getJob(id);
 export const listJobs: ConsoleBackend["listJobs"] = (p) => backend.listJobs(p);
@@ -329,3 +360,5 @@ export const getGithubLink: ConsoleBackend["getGithubLink"] = (p) => backend.get
 export const listGithubLinks: ConsoleBackend["listGithubLinks"] = () => backend.listGithubLinks();
 export const patchGithubLink: ConsoleBackend["patchGithubLink"] = (p, x) => backend.patchGithubLink(p, x);
 export const deleteGithubLink: ConsoleBackend["deleteGithubLink"] = (p) => backend.deleteGithubLink(p);
+export const saveJobImage: ConsoleBackend["saveJobImage"] = (j, n, i) => backend.saveJobImage(j, n, i);
+export const getJobImage: ConsoleBackend["getJobImage"] = (j, n) => backend.getJobImage(j, n);

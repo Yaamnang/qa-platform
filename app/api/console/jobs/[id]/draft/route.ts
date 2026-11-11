@@ -25,8 +25,9 @@ export async function GET(req: NextRequest, ctx: RouteContext<"/api/console/jobs
     headers: {
       ...NO_STORE,
       "content-type": "text/plain; charset=utf-8",
-      // The emitter's own file name: letters, digits, dots and dashes only.
-      "content-disposition": `attachment; filename="${draft.fileName}"`,
+      // The emitter's own file name (letters, digits, dots and dashes only),
+      // saved as .txt: it is a draft to read and finish, not a test to run.
+      "content-disposition": `attachment; filename="${draft.fileName.replace(/\.ts$/, "")}.txt"`,
     },
   });
 }

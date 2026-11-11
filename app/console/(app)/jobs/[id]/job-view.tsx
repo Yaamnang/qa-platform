@@ -3,8 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useRef, useState } from "react";
-import { ArrowLeftIcon } from "@/components/icons";
-import { formatDate, Notice, PageHeader } from "@/components/ui";
+import { formatDate, Notice } from "@/components/ui";
 import { api } from "@/lib/client/api";
 import type { Job, JobExplorer, JobOrigin, Project } from "@/lib/console/contract";
 import { errorMessage, isSignedOut } from "../../../_components/api";
@@ -12,10 +11,14 @@ import { formatAgo, formatDuration, useNow } from "../../../_components/format";
 import { isActive, JOB_KIND_LABEL, JobStatusLabel } from "../../../_components/status";
 import { canRetry, InlineLoading, LoadError } from "../../../_components/states";
 import { JobChat } from "./chat";
+import { Fixes } from "./fixes";
 import { JobSummaryPanel, LivePanel, useLiveFrame } from "./live";
 import { Proposals } from "./proposals";
 import { QaResult } from "./qa-result";
+import { LogLines } from "./log-lines";
 import { ProbeJourneys } from "./probe-journeys";
+import { RunError } from "./run-error";
+import { StopButton } from "./stop-button";
 
 const POLL_MS = 1500;
 const RETRY_MS = 3000;
@@ -54,7 +57,7 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
         if (isActive(r.job.status) || awaitingSummary) timer = setTimeout(poll, POLL_MS);
       } catch (err) {
         if (stopped) return;
-        if (isSignedOut(err)) return router.replace("/console/login");
+        if (isSignedOut(err)) return router.replace("/login");
         if (!loaded) return setLoadError({ text: errorMessage(err, "Could not load this job."), retry: canRetry(err) });
         setStale(true);
         timer = setTimeout(poll, RETRY_MS);
@@ -84,17 +87,26 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
   const now = useNow(active ? 1000 : 30_000);
   const live = useLiveFrame(id, active);
 
+  // Breadcrumb: Workspaces / the workspace / this run. The workspace link opens the tab this run belongs to.
   const back = (
-    <Link href={job ? `/console/projects/${job.projectId}/${job.kind === "qa" ? "probe" : "explore"}` : "/console"} data-testid="job-back"
-      className="inline-flex items-center gap-1.5 font-medium text-ink-500 hover:text-ink-900">
-      <ArrowLeftIcon className="size-3.5" /> {project?.name ?? (job ? "Workspace" : "Workspaces")}
-    </Link>
+    <>
+      <Link href="/console" className="font-medium text-ink-500 hover:text-ink-900">Workspaces</Link>
+      {job && (
+        <>
+          <span aria-hidden="true" className="text-ink-300">/</span>
+          <Link href={`/console/projects/${job.projectId}/${job.kind === "qa" ? "probe" : "explore"}`} data-testid="job-back"
+            className="truncate font-medium text-ink-500 hover:text-ink-900">
+            {project?.name ?? "Workspace"}
+          </Link>
+        </>
+      )}
+    </>
   );
 
   if (loadError) {
     return (
       <>
-        <div className="mb-6 text-sm">{back}</div>
+        <nav aria-label="Breadcrumb" className="mb-5 flex items-center gap-2 text-sm">{back}</nav>
         <LoadError testId="job-load-error" message={loadError.text}
           onRetry={loadError.retry ? () => { setLoadError(null); setAttempt((n) => n + 1); } : undefined} />
       </>
@@ -137,63 +149,73 @@ export function JobView({ params }: { params: Promise<{ id: string }> }) {
       {elapsed !== null && (
         <span data-testid="job-elapsed" className="font-mono tabular-nums text-ink-600">{formatDuration(elapsed)}</span>
       )}
+      {active && <StopButton jobId={job.id} />}
     </div>
   );
 
   return (
     <>
-      <PageHeader eyebrow={back} title={JOB_KIND_LABEL[job.kind]} description={meta} actions={status} />
-
-      {stale && <Notice kind="warning" className="mb-6" testId="job-stale">Lost contact with the server. Retrying.</Notice>}
-
-      {!active && job.summary && <JobSummaryPanel summary={job.summary} />}
-
-      {active && (
-        <>
-          <div className="mb-6 grid items-start gap-6 lg:grid-cols-2">
-            <LivePanel frame={live} finished={false} />
-            <JobChat job={job} onChange={setJob} />
-          </div>
-          <div className="mb-6">
-            <LogPanel text={job.logTail} />
-          </div>
-        </>
-      )}
-
-      {job.status === "error" && (
-        <Notice kind="warning" className="mb-6" testId="job-error">{job.error ?? "The job stopped without giving a reason."}</Notice>
-      )}
-
-      {finished && job.kind === "qa" && (
-        job.result
-          ? <><QaResult result={job.result} /><ProbeJourneys result={job.result} /></>
-          : <Notice kind="warning" className="mb-6" testId="job-no-result">This run finished without a result. The log below shows how far it got.</Notice>
-      )}
-
-      {finished && job.kind === "explore" && job.explorer && (
-        <p data-testid="job-explorer" className="mb-6 text-sm text-ink-500">{explorerText(job.explorer)}</p>
-      )}
-
-      {finished && job.kind === "explore" && <Proposals job={job} onChange={setJob} />}
-
-      {!active && (live.src ? (
-        <div className="mb-6 grid items-start gap-6 lg:grid-cols-2">
-          <LivePanel frame={live} finished />
-          <JobChat job={job} onChange={setJob} />
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+        <div className="min-w-0">
+          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2 text-sm">
+            {back}
+            <span aria-hidden="true" className="text-ink-300">/</span>
+            <h1 className="text-base font-semibold text-ink-900">{JOB_KIND_LABEL[job.kind]}</h1>
+          </nav>
+          <div className="mt-1 text-xs text-ink-500">{meta}</div>
         </div>
-      ) : (
-        <JobChat job={job} onChange={setJob} className="mb-6" />
-      ))}
+        {status}
+      </header>
 
-      {!active && (
-        <details open={job.status === "error"} className="overflow-hidden rounded-xl border border-ink-200 bg-white">
-          <summary data-testid="job-log-toggle"
-            className="cursor-pointer select-none px-5 py-3.5 text-sm font-medium text-ink-700 hover:text-ink-900">
-            Log
-          </summary>
-          <LogText text={job.logTail} className="max-h-96 border-t border-ink-200" />
-        </details>
-      )}
+      {/* The run on the left, its chat on the right. Below lg the chat drops under the run. */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="min-w-0">
+          {stale && <Notice kind="warning" className="mb-6" testId="job-stale">Lost contact with the server. Retrying.</Notice>}
+
+          {/* Why it stopped comes first: without it the rest of the page makes no sense. */}
+          {job.status === "error" && <RunError error={job.error} testId="job-error" />}
+
+          {/* The triage list shows in Fixes, so the summary panel keeps only the text. */}
+          {!active && job.summary && <JobSummaryPanel summary={{ ...job.summary, triage: undefined }} />}
+          {!active && <Fixes job={job} />}
+
+          {active && (
+            <>
+              <LivePanel frame={live} finished={false} className="mb-6" />
+              <div className="mb-6">
+                <LogPanel text={job.logTail} />
+              </div>
+            </>
+          )}
+
+          {finished && job.kind === "qa" && (
+            job.result
+              ? <><QaResult result={job.result} jobId={job.id} /><ProbeJourneys result={job.result} /></>
+              : <Notice kind="warning" className="mb-6" testId="job-no-result">This run finished without a result. The log below shows how far it got.</Notice>
+          )}
+
+          {finished && job.kind === "explore" && job.explorer && (
+            <p data-testid="job-explorer" className="mb-6 text-sm text-ink-500">{explorerText(job.explorer)}</p>
+          )}
+
+          {finished && job.kind === "explore" && <Proposals job={job} onChange={setJob} />}
+
+          {!active && live.src && <LivePanel frame={live} finished className="mb-6" />}
+
+          {!active && (
+            <details open={job.status === "error"} className="overflow-hidden rounded-xl border border-ink-200 bg-white">
+              <summary data-testid="job-log-toggle"
+                className="cursor-pointer select-none px-5 py-3.5 text-sm font-medium text-ink-700 hover:text-ink-900">
+                Log
+              </summary>
+              <LogText text={job.logTail} className="max-h-96 border-t border-ink-200" />
+            </details>
+          )}
+        </div>
+        <div className="min-w-0 lg:sticky lg:top-20 lg:h-[calc(100vh-9rem)]">
+          <JobChat job={job} onChange={setJob} className="lg:h-full" />
+        </div>
+      </div>
     </>
   );
 }
@@ -239,7 +261,7 @@ function LogText({ text, className = "", follow = false }: { text: string; class
         atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 32;
       }}
       className={`overflow-auto whitespace-pre-wrap break-words bg-ink-50 px-5 py-4 font-mono text-xs leading-5 text-ink-700 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-500 ${className}`}>
-      {text || <span className="text-ink-500">No output yet.</span>}
+      <LogLines text={text} />
     </pre>
   );
 }

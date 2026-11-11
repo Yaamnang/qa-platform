@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -21,7 +21,8 @@ import path from "node:path";
  * Answers to login and code questions are secrets. They are never printed and
  * never posted back: the console records only "Login provided". Every value
  * received here is added to linkSecrets(), which qa/explore/redact.ts uses, so
- * it is cut from anything the run writes.
+ * it is cut from anything the run writes. So is every one-time code the run
+ * types (noteSecret, called by qa/lib/totp.ts).
  */
 
 const POLL_MS = 1000;
@@ -34,11 +35,22 @@ export type AskKind = "login" | "code" | "text";
 export type LoginAnswer = { email: string; password: string };
 export type CodeAnswer = { code: string } | { totpSecret: string };
 
-const received: string[] = [];
+/** Every secret value this process has seen: chat answers, run secrets, one-time codes. Never printed. */
+const received = new Set<string>();
 
 /** True when this process was started by the console and can talk to the job's chat. */
 export function linked(): boolean {
   return Boolean(process.env.CONSOLE_JOB_URL && process.env.CONSOLE_JOB_TOKEN);
+}
+
+/**
+ * True when a person is watching this run and can answer a question that only
+ * a person can (a CAPTCHA). The console sets CONSOLE_ATTENDED=1 for runs an
+ * employee started; a run the GitHub poller started gets 0, and a run with no
+ * console at all has nobody.
+ */
+export function attended(): boolean {
+  return linked() && process.env.CONSOLE_ATTENDED === "1";
 }
 
 export function askTimeoutMs(): number {
@@ -46,8 +58,18 @@ export function askTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ASK_TIMEOUT_MS;
 }
 
-/** Values received through ask() in this process, for redaction. */
+/** Adds a value to this process's redaction list, the moment it is produced. The length floor is in redact.ts. */
+export function noteSecret(value: string | undefined): void {
+  if (typeof value === "string" && value) received.add(value);
+}
+
+/**
+ * Values for redaction: answers received through ask() in this process, plus
+ * whatever other processes of this run shared (run-secrets.json, re-read when
+ * it changes), so a setup key or code given after the first read is still cut.
+ */
 export function linkSecrets(): string[] {
+  readRunSecrets();
   return [...received];
 }
 
@@ -87,8 +109,9 @@ export async function ask(question: { kind: AskKind; prompt: string; event?: str
     if (!res?.ok) continue; // a dropped request is retried on the next tick
     const body = (await res.json().catch(() => null)) as { state?: string; values?: Record<string, unknown> } | null;
     if (body?.state === "answered" && body.values) {
-      if (question.kind !== "text") for (const value of Object.values(body.values)) {
-        if (typeof value === "string" && value.length >= 4 && !value.includes("@")) received.push(value);
+      // Everything but the email address is a secret, whatever its length.
+      if (question.kind !== "text") for (const [key, value] of Object.entries(body.values)) {
+        if (key !== "email" && typeof value === "string") noteSecret(value);
       }
       return body.values;
     }
@@ -120,7 +143,11 @@ export async function askCode(prompt: string): Promise<CodeAnswer> {
   const values = await ask({ kind: "code", prompt, event: "code-screen" });
   if (values.skip === true) throw new SignInSkipped();
   if (typeof values.totpSecret === "string") return { totpSecret: values.totpSecret };
-  if (typeof values.code === "string") return { code: values.code };
+  if (typeof values.code === "string") {
+    // Shared with the run's other processes, so the final report cuts it too.
+    if (linked()) rememberForRun({ codes: [...(readRunSecrets().codes ?? []), values.code] });
+    return { code: values.code };
+  }
   throw new Error("The console sent an unexpected answer.");
 }
 
@@ -144,28 +171,51 @@ export async function inbox(): Promise<string[]> {
 // else and worthless once the job ends. global-teardown.ts deletes it.
 // ---------------------------------------------------------------------------
 
-type RunSecrets = { email?: string; password?: string; totpSecret?: string };
+type RunSecrets = { email?: string; password?: string; totpSecret?: string; codes?: string[] };
 
 const runSecretsFile = () => path.join(process.cwd(), "qa", ".auth", "run-secrets.json");
 const runKey = () => createHash("sha256").update(`eclypse-run-secrets\n${process.env.CONSOLE_JOB_TOKEN}`).digest();
 let cache: RunSecrets | null = null;
+/** The file's time and size when cache was read, so a later write by another process is picked up. */
+let cacheStamp = "";
+
+function fileStamp(): string {
+  try {
+    const { mtimeMs, size } = statSync(runSecretsFile());
+    return `${mtimeMs}:${size}`;
+  } catch {
+    return "";
+  }
+}
+
+/** Run secrets are secrets: every value read is added to the redaction list too. */
+function absorb(values: RunSecrets): void {
+  noteSecret(values.password);
+  noteSecret(values.totpSecret);
+  for (const code of values.codes ?? []) noteSecret(code);
+}
 
 function readRunSecrets(): RunSecrets {
   if (!linked()) return {};
-  if (cache) return cache;
+  const stamp = fileStamp();
+  // Unchanged, or deleted at the end of the run: keep what was read last.
+  if (cache && (stamp === cacheStamp || stamp === "")) return cache;
   try {
     const { iv, tag, data } = JSON.parse(readFileSync(runSecretsFile(), "utf8")) as { iv: string; tag: string; data: string };
     const decipher = createDecipheriv("aes-256-gcm", runKey(), Buffer.from(iv, "base64"), { authTagLength: 16 });
     decipher.setAuthTag(Buffer.from(tag, "base64"));
     const plain = Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8");
     cache = JSON.parse(plain) as RunSecrets;
+    cacheStamp = stamp;
+    absorb(cache);
     return cache;
   } catch {
-    return {};
+    // Missing, or caught mid-write: try again next time.
+    return cache ?? {};
   }
 }
 
-export function runSecret(name: keyof RunSecrets): string | undefined {
+export function runSecret(name: "email" | "password" | "totpSecret"): string | undefined {
   return readRunSecrets()[name] || undefined;
 }
 
@@ -182,9 +232,12 @@ export function rememberForRun(values: RunSecrets): void {
     { mode: 0o600 },
   );
   cache = merged;
+  cacheStamp = fileStamp();
+  absorb(merged);
 }
 
 export function forgetRunSecrets(): void {
   cache = null;
+  cacheStamp = "";
   rmSync(runSecretsFile(), { force: true });
 }

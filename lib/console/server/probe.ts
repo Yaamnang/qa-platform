@@ -6,15 +6,18 @@ import { assertOk, client } from "@/lib/server/store-supabase";
 import { hasAnthropicKey, isStandIn, NO_KEY_NO_PLAN } from "@/qa/probe/detect";
 import type { ProbePlan } from "@/qa/probe/types";
 import type { Job, ProbeJourneyResult, ProbeRunInfo } from "../contract";
-import { qaRunRefusal } from "./projects";
 import type { ProjectRecord } from "./records";
 
 /**
  * The console's side of the Probe (kind "qa").
  *
- * Which Probe: the stand-in gets the built-in suite, which writes, so it
- * still needs the allow-list. Any other site gets the AI Probe, which is
- * allowed anywhere because it is read-only off the list (qa/probe/session.ts).
+ * Which Probe: the stand-in gets the built-in suite, which always uploads and
+ * deletes in its QA tenant, so it only starts when the run may change data.
+ * Any other site gets the AI Probe, which is allowed anywhere: when the run
+ * may not change data it skips every step that would (qa/probe/session.ts).
+ *
+ * Whether a run may change data is decided per run by the caller (start.ts)
+ * and reaches the child as PROBE_WRITES_ALLOWED.
  *
  * The recorded plan: after the first AI Probe on a workspace, the journeys it
  * ran are saved here, and every later Probe replays them with no model call.
@@ -28,11 +31,13 @@ export async function probeKind(project: ProjectRecord): Promise<ProbeKind> {
   return (await isStandIn(project.targetUrl)) ? "builtin" : "ai";
 }
 
+export const STAND_IN_NEEDS_WRITES =
+  "This target is the stand-in. Its built-in suite saves, uploads and deletes, so it cannot run read-only. Use Full access test on this target.";
+
 /** Null when the Probe may start, otherwise the reason, for a 403 or 422. */
-export async function probeRefusal(project: ProjectRecord): Promise<{ status: number; error: string } | null> {
+export async function probeRefusal(project: ProjectRecord, writes: boolean): Promise<{ status: number; error: string } | null> {
   if ((await probeKind(project)) === "builtin") {
-    const refusal = qaRunRefusal(project.targetUrl);
-    return refusal ? { status: 403, error: refusal } : null;
+    return writes ? null : { status: 403, error: STAND_IN_NEEDS_WRITES };
   }
   if (!hasAnthropicKey() && !(await getProbePlan(project.id))) return { status: 422, error: NO_KEY_NO_PLAN };
   return null;
@@ -86,12 +91,12 @@ const PLAN_OUT = "probe-plan-out.json";
  * built-in suite. The key's value is redacted from the log like every other
  * secret (runner.ts secretsToHide).
  */
-export async function probeChildEnv(project: ProjectRecord, dir: string): Promise<Record<string, string>> {
+export async function probeChildEnv(project: ProjectRecord, dir: string, writes: boolean): Promise<Record<string, string>> {
   mkdirSync(dir, { recursive: true });
   const env: Record<string, string> = {
     PROBE_DIR: dir,
     PROBE_PLAN_OUT: path.join(dir, PLAN_OUT),
-    PROBE_WRITES_ALLOWED: qaRunRefusal(project.targetUrl) === null ? "1" : "0",
+    PROBE_WRITES_ALLOWED: writes ? "1" : "0",
   };
   rmSync(env.PROBE_PLAN_OUT, { force: true });
   const plan = await getProbePlan(project.id).catch(() => null);

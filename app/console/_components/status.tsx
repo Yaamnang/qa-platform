@@ -12,13 +12,26 @@ export const DOT_COLOUR: Record<Tone, string> = {
   active: "bg-brand-500 animate-pulse",
 };
 
-/** A state shown as a small dot plus a word. */
-export function StatusDot({ tone, children, testId, className = "" }: {
+/** The same colours for a word shown without its dot. */
+export const WORD_COLOUR: Record<Tone, string> = {
+  pass: "text-emerald-600",
+  fail: "text-red-600",
+  warn: "text-amber-600",
+  idle: "text-ink-500",
+  active: "text-brand-600",
+};
+
+/** A state shown as a small dot plus a word. With dot={false}, the word alone in the state's colour. */
+export function StatusDot({ tone, children, testId, className = "", dot = true }: {
   tone: Tone;
   children: ReactNode;
   testId?: string;
   className?: string;
+  dot?: boolean;
 }) {
+  if (!dot) {
+    return <span data-testid={testId} data-tone={tone} className={`font-medium ${WORD_COLOUR[tone]} ${className}`}>{children}</span>;
+  }
   return (
     <span data-testid={testId} data-tone={tone} className={`inline-flex items-center gap-2 ${className}`}>
       <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${DOT_COLOUR[tone]}`} />
@@ -27,7 +40,7 @@ export function StatusDot({ tone, children, testId, className = "" }: {
   );
 }
 
-export const JOB_KIND_LABEL: Record<JobKind, string> = { explore: "Explore", qa: "Probe" };
+export { JOB_KIND_LABEL } from "@/lib/console/contract";
 
 /** Still going: polled, and the chat accepts messages. "waiting" means the run asked the employee something. */
 export const isActive = (status: JobStatus) => status === "queued" || status === "running" || status === "waiting";
@@ -47,9 +60,9 @@ function jobWord(kind: JobKind, status: JobStatus): string {
   return { queued: "Queued", running: "Running", waiting: "Waiting for you", passed: "Passed", failed: "Failed", error: "Error" }[status];
 }
 
-export function JobStatusLabel({ job, testId, className }: { job: Pick<Job, "kind" | "status">; testId?: string; className?: string }) {
+export function JobStatusLabel({ job, testId, className, dot }: { job: Pick<Job, "kind" | "status">; testId?: string; className?: string; dot?: boolean }) {
   return (
-    <StatusDot tone={JOB_TONE[job.status]} testId={testId} className={className}>
+    <StatusDot tone={JOB_TONE[job.status]} testId={testId} className={className} dot={dot}>
       <span data-status={job.status}>{jobWord(job.kind, job.status)}</span>
     </StatusDot>
   );

@@ -84,3 +84,19 @@ export function Spinner({ className = "size-4" }: { className?: string }) {
     </svg>
   );
 }
+/** A commit on a branch, for the GitHub section. Not GitHub's logo, which is a trademark. */
+export const GitBranchIcon = (p: IconProps) => (
+  <Icon {...p}><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="8" r="2" /><path d="M6 8v8" /><path d="M18 10a6 6 0 0 1-6 6H8" /></Icon>
+);
+/** A panel with a sidebar, for collapsing and expanding a side menu. */
+export const PanelLeftIcon = (p: IconProps) => (
+  <Icon {...p}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></Icon>
+);
+/** Four tiles, for the list of workspaces. */
+export const GridIcon = (p: IconProps) => (
+  <Icon {...p}><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></Icon>
+);
+/** A box with an arrow leaving it, for a link that opens in a new tab. */
+export const ExternalLinkIcon = (p: IconProps) => (
+  <Icon {...p}><path d="M14 4h6v6" /><path d="M20 4l-9 9" /><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4" /></Icon>
+);

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { branchHead, isBranchName, isRepoName, toGithubLinkDto } from "@/lib/console/server/github";
 import { decryptSecret } from "@/lib/console/server/encryption";
+import { isWatched } from "@/lib/console/server/github-poller";
 import { NO_STORE, githubFailure, jsonError, requireEmployee } from "@/lib/console/server/http";
 import { deleteGithubLink, getGithubLink, getProject, patchGithubLink } from "@/lib/console/server/store";
 
@@ -50,6 +51,26 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ github: toGithubLinkDto(saved) });
   } catch (err) {
     return githubFailure(err);
+  }
+}
+
+// The "Check every new commit" switch. Off keeps the token, repo and branch; the poller just skips them.
+export async function PATCH(req: NextRequest, ctx: Ctx) {
+  const { denied } = await requireEmployee(req);
+  if (denied) return denied;
+  const { id } = await ctx.params;
+  if (!(await getProject(id))) return jsonError(404, "Project not found.");
+  if (!isWatched(await getGithubLink(id))) return jsonError(409, "Connect GitHub and pick a repo and branch first.");
+
+  const body = (await req.json().catch(() => null)) as { autoCheck?: unknown } | null;
+  if (typeof body?.autoCheck !== "boolean") return jsonError(400, "Send autoCheck as true or false.");
+
+  try {
+    const saved = await patchGithubLink(id, { autoCheck: body.autoCheck });
+    return NextResponse.json({ github: toGithubLinkDto(saved) }, { headers: NO_STORE });
+  } catch (err) {
+    // On Supabase before db/schema-console.sql has added the column. The message says what to run.
+    return jsonError(500, err instanceof Error ? err.message : "Could not save the switch.");
   }
 }
 

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { employeeMessage, withLiveChat } from "@/lib/console/server/chat";
+import { employeeMessage, steeringRefusal, withLiveChat } from "@/lib/console/server/chat";
 import { jsonError, requireEmployee } from "@/lib/console/server/http";
 import { toJobDto } from "@/lib/console/server/projects";
 import { getJob } from "@/lib/console/server/store";
@@ -17,6 +17,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const body = (await req.json().catch(() => null)) as { text?: unknown } | null;
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text) return jsonError(400, "Write a message first.");
+  const refusal = steeringRefusal(job.id);
+  if (refusal) return jsonError(409, refusal);
   if (!employeeMessage(job.id, text)) return jsonError(409, "This job is no longer running.");
 
   return NextResponse.json({ job: toJobDto(withLiveChat(job)) });

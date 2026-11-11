@@ -8,6 +8,7 @@ import type { ExplorerSummary, Proposal as ExplorerProposal } from "@/qa/explore
 import type { Summary } from "@/qa/reporter/plain-report";
 import type { Job, JobKind, JobOrigin, Proposal } from "../contract";
 import { closeLink, openLink, waitedMs } from "./chat";
+import { moveImagesToStore } from "./job-images";
 import { dropFrame } from "./live-frames";
 import { summarize } from "./summary";
 import { decryptSecret } from "./encryption";
@@ -112,7 +113,8 @@ export function jobDir(jobId: string): string {
 // The one slot
 // ---------------------------------------------------------------------------
 
-type Slot = { child: ChildProcess | null };
+/** stoppedBy: the employee who pressed Stop, once they have. */
+type Slot = { child: ChildProcess | null; jobId: string | null; stoppedBy: string | null };
 
 type RunnerState = {
   /** The job holding the slot, or null when idle. child is null while the job is still being created. */
@@ -193,12 +195,15 @@ type Credentials = { email: string; password: string; totpSecret: string };
  * Creates the job and starts its child process. Resolves as soon as the child
  * is running; the route answers 202 and the page polls the job.
  *
- * The caller has already checked, for a qa job, that its host is on
- * CONSOLE_QA_HOSTS, and for a GitHub-started job that credentials are saved. Use startProjectJob in
- * start.ts, which does those checks, rather than calling this directly.
+ * The caller has already decided whether a qa job may change data (writesAllowed),
+ * checked that the Probe can start with that, and for a GitHub-started job that
+ * credentials are saved. Use startProjectJob in start.ts, which does those
+ * checks, rather than calling this directly.
  *
- * origin says who asked: the console's pages (manual) or GitHub Actions with
+ * origin says who asked: the console's pages (manual) or GitHub with
  * the commit that caused the run. It is only stored, it changes nothing here.
+ * writesAllowed becomes PROBE_WRITES_ALLOWED for a qa job. Explore ignores it.
+ * attended becomes CONSOLE_ATTENDED: is a person watching who can be asked?
  */
 export async function startJob(
   project: ProjectRecord,
@@ -206,13 +211,15 @@ export async function startJob(
   createdBy: string,
   origin: JobOrigin = MANUAL_ORIGIN,
   callbackBase: string = defaultCallbackBase(),
+  writesAllowed = false,
+  attended = false,
 ): Promise<StartResult> {
   await recoverInterruptedJobs();
 
   // The slot is taken before the next await. Node runs this part without
   // interruption, so of two requests arriving together exactly one gets past.
   if (state.active) return { busy: BUSY_MESSAGE };
-  const slot: Slot = { child: null };
+  const slot: Slot = { child: null, jobId: null, stoppedBy: null };
   state.active = slot;
 
   let job: JobRecord | null = null;
@@ -232,7 +239,8 @@ export async function startJob(
       runnerPid: process.pid,
       origin,
     });
-    return { job: await launch(job, project, credentials, slot, callbackBase) };
+    slot.jobId = job.id;
+    return { job: await launch(job, project, credentials, slot, callbackBase, writesAllowed, attended) };
   } catch (err) {
     state.active = null;
     // launch only throws before the child exists. A job row left queued
@@ -268,7 +276,7 @@ export function defaultCallbackBase(port?: string): string {
 type Link = { url: string; token: string };
 
 /** Everything the child inherits, minus secrets and settings that are not its business, plus this job's account. */
-function childEnv(kind: JobKind, credentials: Credentials, host: string, link: Link): NodeJS.ProcessEnv {
+function childEnv(kind: JobKind, credentials: Credentials, host: string, link: Link, attended: boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const name of Object.keys(env)) {
     if (SECRET_NAME.test(name) || NOT_INHERITED.test(name)) delete env[name];
@@ -290,6 +298,8 @@ function childEnv(kind: JobKind, credentials: Credentials, host: string, link: L
     // The job's chat. See qa/lib/console-link.ts.
     CONSOLE_JOB_URL: link.url,
     CONSOLE_JOB_TOKEN: link.token,
+    // 1 when an employee started the run and is watching it. See attended() in qa/lib/console-link.ts.
+    CONSOLE_ATTENDED: attended ? "1" : "0",
     ...(process.env.CONSOLE_ASK_TIMEOUT_MS ? { CONSOLE_ASK_TIMEOUT_MS: process.env.CONSOLE_ASK_TIMEOUT_MS } : {}),
   };
 }
@@ -316,6 +326,8 @@ async function launch(
   credentials: Credentials,
   slot: Slot,
   callbackBase: string,
+  writesAllowed: boolean,
+  attended: boolean,
 ): Promise<JobRecord> {
   const kind = job.kind;
   const dir = jobDir(job.id);
@@ -343,12 +355,14 @@ async function launch(
     const line = redact(raw.replace(ANSI, "").replace(/\r/g, ""), secrets);
     // The QA runner prints "Report: qa-results/<run id>/report.md"; summary.json sits next to it.
     qaRunId = line.match(/Report: qa-results\/([\w-]+)\/report\.md/)?.[1] ?? qaRunId;
-    lines.push(line);
+    // Each line gets the time it arrived (UTC, like the chat), so the log reads as a timeline.
+    lines.push(line.trim() ? `${new Date().toISOString().slice(11, 19)} ${line}` : line);
     if (lines.length > LOG_LINES) lines.splice(0, lines.length - LOG_LINES);
     logChanged = true;
   };
   const clean = (text: string) => redact(text, secrets);
-  const lastLine = () => [...lines].reverse().find((line) => line.trim()) ?? "";
+  // Without its time, since it is quoted inside an error message.
+  const lastLine = () => ([...lines].reverse().find((line) => line.trim()) ?? "").replace(LOG_TIME, "");
 
   // Writes for this job go out one after another, in order, so a late log
   // flush can never land on top of the final result. A failed write is
@@ -367,10 +381,10 @@ async function launch(
   const link: Link = { url: `${callbackBase}/api/console/jobs/${job.id}/agent`, token };
 
   // Probe only: the recorded plan, where to record a new one, whether writes are allowed, the model key (lib/console/server/probe.ts).
-  const probeEnv = kind === "qa" ? await probeChildEnv(project, dir) : {};
+  const probeEnv = kind === "qa" ? await probeChildEnv(project, dir, writesAllowed) : {};
   const child = spawn(process.execPath, args, {
     cwd: ROOT,
-    env: { ...childEnv(kind, credentials, hostOf(project.targetUrl), link), ...probeEnv },
+    env: { ...childEnv(kind, credentials, hostOf(project.targetUrl), link, attended), ...probeEnv },
     stdio: ["ignore", "pipe", "pipe"],
     shell: false, // the default, written out so nobody "simplifies" it into a shell string later
     windowsHide: true,
@@ -421,6 +435,8 @@ async function launch(
     try {
       if (spawnError) {
         outcome = failure(`The ${kind} command could not be started: ${clean(spawnError.message)}`);
+      } else if (slot.stoppedBy) {
+        outcome = failure(`Stopped by ${slot.stoppedBy} after ${duration(Date.now() - startedAt)}.`);
       } else if (timedOut) {
         outcome = failure(
           `Stopped after ${duration(limitMs)}, the time limit for ${kind} jobs. Set ${limit.variable} to allow longer.`,
@@ -444,31 +460,36 @@ async function launch(
     // result. On a Supabase database that has not had the newer columns added
     // (db/schema-console.sql), only those writes fail, and the result is kept.
     const { explorer, ...result } = outcome;
-    void write({ ...result, logTail: lines.join("\n"), finishedAt: Date.now() }).then(() => {
-      // Free the slot only once the final state is stored, so the next job
-      // never sees this one as still running.
-      if (state.active === slot) state.active = null;
+    // Probe only: the problem images go into the store and their files off the
+    // disk first, so a note about it is in the log the final write stores. Never throws.
+    const images = kind === "qa" ? moveImagesToStore(job.id, outcome.result, addLine) : Promise.resolve();
+    void images.then(() => {
+      void write({ ...result, logTail: lines.join("\n"), finishedAt: Date.now() }).then(() => {
+        // Free the slot only once the final state is stored, so the next job
+        // never sees this one as still running.
+        if (state.active === slot) state.active = null;
+      });
+      if (explorer !== undefined) void write({ explorer });
+      if (kind === "qa") void saveRecordedPlan(project.id, dir);
+      if (messages) void write({ messages });
+      // Last, in a write of its own: it can take up to 10 s, and it is advisory only.
+      void summarize(
+        {
+          kind,
+          status: outcome.status ?? "error",
+          result: outcome.result,
+          proposals: outcome.proposals,
+          explorer,
+          error: outcome.error,
+          durationMs: Date.now() - startedAt,
+          logLines: [...lines],
+          messages: messages ?? [],
+        },
+        clean,
+      )
+        .then((summary) => write({ summary }))
+        .catch(() => undefined);
     });
-    if (explorer !== undefined) void write({ explorer });
-    if (kind === "qa") void saveRecordedPlan(project.id, dir);
-    if (messages) void write({ messages });
-    // Last, in a write of its own: it can take up to 10 s, and it is advisory only.
-    void summarize(
-      {
-        kind,
-        status: outcome.status ?? "error",
-        result: outcome.result,
-        proposals: outcome.proposals,
-        explorer,
-        error: outcome.error,
-        durationMs: Date.now() - startedAt,
-        logLines: [...lines],
-        messages: messages ?? [],
-      },
-      clean,
-    )
-      .then((summary) => write({ summary }))
-      .catch(() => undefined);
   };
 
   child.on("error", (err) => {
@@ -496,6 +517,9 @@ async function launch(
 function failure(reason: string): JobPatch {
   return { status: "error", error: reason };
 }
+
+/** The "HH:MM:SS " a log line starts with (addLine in runJob). */
+const LOG_TIME = /^\d{2}:\d{2}:\d{2} /;
 
 function lastOutput(line: string): string {
   return line ? ` Last output: ${line}` : " It printed nothing.";
@@ -651,11 +675,16 @@ function toResult(summary: Summary, clean: (text: string) => string): NonNullabl
       failedStep: p.failedStep === null ? null : clean(p.failedStep),
       details: p.details.map(clean),
       tests: p.tests.map(clean),
+      // The screenshot's number only. The file stays in the run's folder (job-images.ts moves it into the store).
+      ...(validImageNumber(p.image?.n) ? { image: p.image!.n } : {}),
+      ...(typeof p.imageNote === "string" ? { imageNote: clean(p.imageNote) } : {}),
     })),
     runId: summary.runId ?? null,
     ...probeExtras(summary, clean),
   };
 }
+
+const validImageNumber = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 999;
 
 // ---------------------------------------------------------------------------
 // Process helpers
@@ -687,6 +716,23 @@ function lineSplitter(onLine: (line: string) => void) {
  * enough: the QA runner starts Playwright, which starts a browser, and those
  * would carry on running, holding the browser and the ports the next job needs.
  */
+/**
+ * The Stop button: ends the running job the same way the time limit does, by
+ * stopping its process tree. The job then finishes through the normal path,
+ * so its log, chat and summary are kept, with "Stopped by ..." as its error.
+ * Returns false when this server is not running that job (already finished,
+ * still being created, or run by another console server).
+ */
+export function stopJob(jobId: string, by: string): boolean {
+  const slot = state.active;
+  if (!slot || slot.jobId !== jobId || !slot.child) return false;
+  if (!slot.stoppedBy) {
+    slot.stoppedBy = by;
+    stopTree(slot.child);
+  }
+  return true;
+}
+
 function stopTree(child: ChildProcess): void {
   if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === "win32") {

@@ -177,7 +177,7 @@ checks that outcome with a timeout; a click after which nothing changed at all i
 reported as "Button did nothing". The model only plans. Verdicts come from those
 checks alone. The journeys as run are saved on the workspace, and every later
 Probe replays them with no model call, so results repeat and cost nothing until
-someone presses Re-plan. Off the allow-list the Probe runs behind the read-only
+someone presses Re-plan. Without Full access the Probe runs behind the read-only
 guard: a step whose write gets blocked is skipped, not failed, while downloads and
 navigation, both GETs, are still checked.
 

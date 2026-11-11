@@ -32,7 +32,7 @@ export default function ConsoleVerifyPage() {
 
   return (
     <AuthCard title="Enter your code"
-      footer={<Link href="/console/login" data-testid="verify-back" className="font-medium text-brand-600 hover:text-brand-700">Use a different account</Link>}>
+      footer={<Link href="/login" data-testid="verify-back" className="font-medium text-brand-600 hover:text-brand-700">Use a different account</Link>}>
       <form onSubmit={submit} className="space-y-5">
         <div>
           <label htmlFor="code" className="mb-1.5 block text-sm font-medium text-ink-800">Six-digit code from your authenticator app</label>

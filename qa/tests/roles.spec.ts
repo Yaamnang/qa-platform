@@ -10,8 +10,9 @@ import { chooseOrganization, documentRow, expectSignedInWorkspace, personRow, su
  * way a curious user with the browser's developer tools could.
  */
 
-// The Viewer signs in from scratch. Traces record typed values, so no traces or video.
-test.use({ storageState: { cookies: [], origins: [] }, trace: "off", video: "off" });
+// The Viewer signs in from scratch.
+// Traces record typed values, so never trace the steps that type secrets.
+test.use({ storageState: { cookies: [], origins: [] }, trace: "off", screenshot: "off", video: "off" });
 
 test.describe("Roles", { tag: ["@roles", "@security", "@live-safe"] }, () => {
   test("a Viewer can see documents but cannot upload, delete or analyse", async ({ page, playwright }, testInfo) => {

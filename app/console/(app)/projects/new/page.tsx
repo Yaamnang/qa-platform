@@ -3,26 +3,25 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { ArrowLeftIcon, LockIcon } from "@/components/icons";
+import { ArrowLeftIcon } from "@/components/icons";
 import { Button, buttonStyles, Field, Notice, PageHeader } from "@/components/ui";
 import { ApiError, postJson } from "@/lib/client/api";
 import type { Project } from "@/lib/console/contract";
 import { errorMessage, isSignedOut } from "../../../_components/api";
-import { SecretField } from "../../../_components/SecretField";
 
-type Values = { name: string; targetUrl: string; qaEmail: string; qaPassword: string; qaTotpSecret: string };
+/**
+ * A workspace is a name and a target. The QA account is not asked for here: a
+ * run asks for it in the job chat when it reaches the sign-in screen, and can
+ * save it on the workspace from there.
+ */
+type Values = { name: string; targetUrl: string };
 type Errors = Partial<Record<keyof Values, string>>;
 
-const EMPTY: Values = { name: "", targetUrl: "", qaEmail: "", qaPassword: "", qaTotpSecret: "" };
+const EMPTY: Values = { name: "", targetUrl: "" };
 const FIELD_IDS: Record<keyof Values, string> = {
   name: "project-name",
   targetUrl: "project-target-url",
-  qaEmail: "project-qa-email",
-  qaPassword: "project-qa-password",
-  qaTotpSecret: "project-qa-totp-secret",
 };
-
-const squash = (s: string) => s.replace(/\s+/g, "");
 
 function validate(v: Values): Errors {
   const errors: Errors = {};
@@ -31,17 +30,6 @@ function validate(v: Values): Errors {
   const url = v.targetUrl.trim();
   if (!url) errors.targetUrl = "Enter the target URL.";
   else if (!isHttpUrl(url)) errors.targetUrl = "Enter a full URL that starts with http:// or https://.";
-
-  // The QA account fields are optional: a run asks for what is missing when it reaches the sign-in screen.
-  const email = v.qaEmail.trim();
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.qaEmail = "Enter a valid email address.";
-  else if (!email && v.qaPassword) errors.qaEmail = "Enter the email that goes with this password.";
-
-  const secret = squash(v.qaTotpSecret);
-  if (!secret) {
-    // Left empty: the run asks for a code.
-  } else if (/^\d{6}$/.test(secret)) errors.qaTotpSecret = "That is a six-digit code. Enter the setup key instead.";
-  else if (!/^[A-Z2-7]+=*$/i.test(secret)) errors.qaTotpSecret = "A setup key only uses the letters A to Z and the digits 2 to 7.";
   return errors;
 }
 
@@ -93,15 +81,10 @@ export default function NewProjectPage() {
       const { project } = await postJson<{ project: Project }>("/api/console/projects", {
         name: values.name.trim(),
         targetUrl: values.targetUrl.trim(),
-        qaEmail: values.qaEmail.trim(),
-        qaPassword: values.qaPassword,
-        qaTotpSecret: squash(values.qaTotpSecret).toUpperCase(),
       });
-      // The server has them now. Drop the password and secret before leaving the page.
-      setValues(EMPTY);
       router.push(`/console/projects/${project.id}/probe`);
     } catch (err) {
-      if (isSignedOut(err)) return router.replace("/console/login");
+      if (isSignedOut(err)) return router.replace("/login");
       const fromServer = serverFieldErrors(err);
       if (Object.keys(fromServer).length) showErrors(fromServer);
       else setFormError(errorMessage(err, "Could not reach the console. Try again."));
@@ -125,27 +108,8 @@ export default function NewProjectPage() {
           onChange={(e) => set("name", e.target.value)} data-testid="project-name" />
         <Field id={FIELD_IDS.targetUrl} label="Target URL" type="url" inputMode="url" required className="font-mono"
           placeholder="https://staging.example.com" value={values.targetUrl} error={errors.targetUrl}
-          hint="Probe is allowed only on hosts on the allow-list. Explore works on any host."
+          hint="The Probe only reads this site until Full access is turned on."
           onChange={(e) => set("targetUrl", e.target.value)} data-testid="project-target-url" />
-
-        <div className="border-t border-ink-200 pt-5">
-          <p data-testid="project-qa-optional" className="mb-4 text-xs text-ink-500">
-            Optional. Leave these empty and the run asks for them in the job chat when it reaches the sign-in screen.
-          </p>
-          <Field id={FIELD_IDS.qaEmail} label="QA account email" type="email" className="font-mono"
-            value={values.qaEmail} error={errors.qaEmail} hint="A dedicated QA account, never a real person's."
-            onChange={(e) => set("qaEmail", e.target.value)} data-testid="project-qa-email" />
-        </div>
-        <SecretField id={FIELD_IDS.qaPassword} label="QA account password" autoComplete="new-password"
-          value={values.qaPassword} error={errors.qaPassword}
-          onChange={(e) => set("qaPassword", e.target.value)} testId="project-qa-password" />
-        <SecretField id={FIELD_IDS.qaTotpSecret} label="QA account authenticator secret" autoComplete="off" className="font-mono"
-          value={values.qaTotpSecret} error={errors.qaTotpSecret} hint="The base32 setup key, not a six-digit code."
-          onChange={(e) => set("qaTotpSecret", e.target.value)} testId="project-qa-totp-secret" />
-        <p data-testid="project-secrets-note" className="flex items-center gap-1.5 text-xs text-ink-500">
-          <LockIcon className="size-3.5 shrink-0" />
-          The password and authenticator secret are stored encrypted and never shown again.
-        </p>
 
         {formError && <Notice kind="error" testId="project-form-error">{formError}</Notice>}
 

@@ -37,5 +37,5 @@ fi
 pm2 save
 
 echo
-echo "Running on port $PORT. Open http://<server-ip>:$PORT/console/login"
+echo "Running on port $PORT. Open http://<server-ip>:$PORT/login"
 echo "Set CONSOLE_PUBLIC_URL=http://<server-ip>:$PORT in .env so links on GitHub commits point here."

@@ -29,7 +29,7 @@ export default function OrganizationsPage() {
     api<OrgList>("/api/orgs")
       .then(setData)
       .catch((err) => {
-        if (err instanceof ApiError && err.status === 401) router.replace("/login");
+        if (err instanceof ApiError && err.status === 401) router.replace("/fake/login");
         else setError("Could not load your organizations.");
       });
   }, [router]);
@@ -67,7 +67,7 @@ export default function OrganizationsPage() {
 
   async function signOut() {
     await api("/api/auth/logout", { method: "POST" }).catch(() => {});
-    router.replace("/login");
+    router.replace("/fake/login");
   }
 
   if (!data && !error) return <LoadingScreen />;

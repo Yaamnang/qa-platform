@@ -55,7 +55,7 @@ export default function AuthenticatorSetupPage() {
     <AuthLayout
       title="Set up your authenticator"
       subtitle="Every sign-in asks for a code from this app, so only you can get in."
-      footer={<Link href="/login" className="font-medium text-brand-600 hover:text-brand-700">Back to sign in</Link>}
+      footer={<Link href="/fake/login" className="font-medium text-brand-600 hover:text-brand-700">Back to sign in</Link>}
     >
       {loadError ? (
         <Notice kind="error">{loadError}</Notice>

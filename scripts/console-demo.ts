@@ -196,8 +196,6 @@ function serverEnv(employee: Account, bot: Account): NodeJS.ProcessEnv {
     BUGS: "",
     JOB_STAGE_MS: process.env.JOB_STAGE_MS ?? "5000", // the fake AI job takes ~20s, as in qa/run.ts
     INSECURE_COOKIES: "1", // plain http on localhost
-    // A QA run uploads and deletes data, so the console only allows it on listed hosts. This server is the only target.
-    CONSOLE_QA_HOSTS: "localhost",
     // The console employee. Seeding the TOTP secret marks the authenticator as
     // already set up, so sign-in goes straight to the code (store.ts seed()).
     SEED_CONSOLE_EMAIL: employee.email,
@@ -377,7 +375,7 @@ async function printSignIn(baseURL: string, employee: Account) {
     "",
     " Open the QA console in your browser and sign in:",
     "",
-    `   Address    ${baseURL}/console/login`,
+    `   Address    ${baseURL}/login`,
     `   Email      ${employee.email}`,
     `   Password   ${employee.password}`,
     "   Code       from your authenticator app, or the live code below",

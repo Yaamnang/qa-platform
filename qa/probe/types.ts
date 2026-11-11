@@ -89,6 +89,12 @@ export type JourneyResult = {
   failedStep: string | null;
   steps: StepResult[];
   durationMs: number;
+  /** Failed journeys only: images/<image>.jpg in the run folder holds the page when it failed. */
+  image?: number;
+  /** Why a failed journey has no image. */
+  imageNote?: string;
+  /** Skipped because of a CAPTCHA nobody could answer: the line for the report. */
+  blocked?: string;
 };
 
 /** How the plan came about, for the log, the job page and the cost line. */

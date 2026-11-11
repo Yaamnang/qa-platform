@@ -15,6 +15,7 @@ import {
   type EmployeeSummary,
   type GithubLinkPatch,
   type GithubLinkRecord,
+  type JobImage,
   type JobPatch,
   type JobRecord,
   type NewJob,
@@ -39,6 +40,7 @@ const SESSIONS = "console_sessions";
 const PROJECTS = "console_projects";
 const JOBS = "console_jobs";
 const GITHUB_LINKS = "console_github_links";
+const JOB_IMAGES = "console_job_images";
 
 // ---------------------------------------------------------------------------
 // Rows and mappers. Columns are snake_case, records camelCase. Timestamps are
@@ -69,6 +71,8 @@ type ProjectRow = {
   qa_totp_secret_enc: string | null;
   created_at: number | string;
   created_by: string;
+  /** Missing until db/schema-console.sql has added the column, which reads as off. */
+  full_access?: boolean | null;
 };
 
 type JobRow = {
@@ -107,6 +111,8 @@ type GithubLinkRow = {
   last_triggered_at: number | string | null;
   etag: string | null;
   pending_job_id: string | null;
+  // Added later with "add column if not exists": missing reads as on.
+  auto_check?: boolean | null;
 };
 
 const numberOrNull = (value: number | string | null) => (value === null ? null : Number(value));
@@ -142,6 +148,7 @@ function rowToProject(row: ProjectRow): ProjectRecord {
     qaTotpSecretEnc: row.qa_totp_secret_enc,
     createdAt: Number(row.created_at),
     createdBy: row.created_by,
+    fullAccess: row.full_access === true,
   };
 }
 
@@ -182,6 +189,7 @@ function rowToGithubLink(row: GithubLinkRow): GithubLinkRecord {
     lastTriggeredAt: numberOrNull(row.last_triggered_at),
     etag: row.etag,
     pendingJobId: row.pending_job_id,
+    autoCheck: row.auto_check !== false,
   };
 }
 
@@ -382,6 +390,12 @@ async function updateProjectCredentials(id: string, patch: ProjectCredentialsPat
   assertOk(error, "project credentials update");
 }
 
+async function setProjectFullAccess(id: string, fullAccess: boolean): Promise<void> {
+  const { error } = await client().from(PROJECTS).update({ full_access: fullAccess }).eq("id", id);
+  // The likely cause is the column not being there yet. Saying so beats a bare Postgres error.
+  if (error) throw new Error(`Could not save Full access (${error.message}). Run db/schema-console.sql in the Supabase SQL editor to add the column.`);
+}
+
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
@@ -494,11 +508,17 @@ async function patchGithubLink(projectId: string, patch: GithubLinkPatch): Promi
   if (patch.lastTriggeredAt !== undefined) row.last_triggered_at = patch.lastTriggeredAt;
   if (patch.etag !== undefined) row.etag = patch.etag;
   if (patch.pendingJobId !== undefined) row.pending_job_id = patch.pendingJobId;
+  // Only written when the switch changes, so every other write works before the column exists.
+  if (patch.autoCheck !== undefined) row.auto_check = patch.autoCheck;
   const { data, error } = await client()
     .from(GITHUB_LINKS)
     .upsert(row, { onConflict: "project_id" })
     .select("*")
     .single();
+  if (error && patch.autoCheck !== undefined) {
+    // The likely cause is the column not being there yet. Saying so beats a bare Postgres error.
+    throw new Error(`Could not save the switch (${error.message}). Run db/schema-console.sql in the Supabase SQL editor to add the column.`);
+  }
   assertOk(error, "github link upsert");
   return rowToGithubLink(data as GithubLinkRow);
 }
@@ -506,6 +526,27 @@ async function patchGithubLink(projectId: string, patch: GithubLinkPatch): Promi
 async function deleteGithubLink(projectId: string): Promise<void> {
   const { error } = await client().from(GITHUB_LINKS).delete().eq("project_id", projectId);
   assertOk(error, "github link delete");
+}
+
+// ---------------------------------------------------------------------------
+// Job images
+// ---------------------------------------------------------------------------
+
+/** Throws when the table is missing; the runner catches it and says what to run. */
+async function saveJobImage(jobId: string, n: number, image: JobImage): Promise<void> {
+  const { error } = await client()
+    .from(JOB_IMAGES)
+    .upsert({ job_id: jobId, n, mime: image.mime, data: image.bytes.toString("base64"), created_at: Date.now() }, { onConflict: "job_id,n" });
+  assertOk(error, "job image save");
+}
+
+/** Null when there is no such image, or the table has not been added yet. */
+async function getJobImage(jobId: string, n: number): Promise<JobImage | null> {
+  const { data, error } = await client().from(JOB_IMAGES).select("mime, data").eq("job_id", jobId).eq("n", n).maybeSingle();
+  if (error || !data) return null;
+  const row = data as { mime: string; data: string };
+  if (row.mime !== "image/jpeg" && row.mime !== "image/png") return null;
+  return { mime: row.mime, bytes: Buffer.from(row.data, "base64") };
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +569,7 @@ export const supabaseConsoleBackend = {
   getProject,
   createProject,
   updateProjectCredentials,
+  setProjectFullAccess,
   createJob,
   getJob,
   listJobs,
@@ -538,4 +580,6 @@ export const supabaseConsoleBackend = {
   listGithubLinks,
   patchGithubLink,
   deleteGithubLink,
+  saveJobImage,
+  getJobImage,
 };

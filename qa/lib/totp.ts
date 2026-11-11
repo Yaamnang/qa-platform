@@ -2,7 +2,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
-import { askCode, linked, rememberForRun } from "./console-link";
+import { askCode, linked, noteSecret, rememberForRun } from "./console-link";
 
 /**
  * One-time codes for the QA bot.
@@ -114,7 +114,28 @@ export async function freshCode(secret = config.totpSecret): Promise<string> {
   steps[key] = step;
   mkdirSync(config.authDir, { recursive: true });
   writeFileSync(stateFile(), JSON.stringify({ steps }));
-  return codeForStep(secret, step);
+  const code = codeForStep(secret, step);
+  // Redacted from the moment it exists. A code from the chat is noted by askCode.
+  noteSecret(code);
+  return code;
+}
+
+/**
+ * Every code the secret made from sinceMs until a minute from now, at most
+ * the last two hours. For redaction in a process that did not type the codes
+ * itself, such as the reporter: it still cuts any code a worker typed.
+ */
+export function codesSince(secret: string, sinceMs: number): string[] {
+  if (!secret) return [];
+  const last = stepNow() + 2;
+  const first = Math.max(Math.floor(sinceMs / 1000 / PERIOD) - 1, last - 240);
+  try {
+    const codes: string[] = [];
+    for (let step = first; step <= last; step++) codes.push(codeForStep(secret, step));
+    return codes;
+  } catch {
+    return []; // not valid base32, so it never made a code
+  }
 }
 
 /** A 6-digit code that is guaranteed NOT to be accepted right now. */

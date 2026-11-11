@@ -1,29 +1,16 @@
-"use client";
+import { redirect } from "next/navigation";
+import { Suspense } from "react";
 
-import { SparkleIcon } from "@/components/icons";
-import { Button, EmptyState, Notice } from "@/components/ui";
-import { JobHistory } from "../job-history";
-import { useStartJob, useWorkspace } from "../workspace";
-
-export default function ExplorePage() {
-  const { project, jobs } = useWorkspace();
-  const { start, starting, error } = useStartJob(project.id, "explore");
-  const history = jobs.filter((j) => j.kind === "explore");
-
+/** Explore was removed from the console. Old links, and the back link of old Explore jobs, land on Probe. */
+export default function ExplorePage({ params }: { params: Promise<{ id: string }> }) {
   return (
-    <>
-      <div className="mb-6">
-        <Button onClick={start} loading={starting} data-testid="job-start-explore">Explore</Button>
-      </div>
-
-      {error && <Notice kind="error" className="mb-6" testId="job-start-error">{error}</Notice>}
-
-      <JobHistory jobs={history}
-        empty={
-          <EmptyState icon={<SparkleIcon className="size-5" />} title="No explore jobs yet">
-            Explore only reads the target and proposes checks.
-          </EmptyState>
-        } />
-    </>
+    <Suspense fallback={null}>
+      <ToProbe params={params} />
+    </Suspense>
   );
+}
+
+async function ToProbe({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return redirect(`/console/projects/${encodeURIComponent(id)}/probe`);
 }

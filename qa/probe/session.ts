@@ -8,11 +8,11 @@ import { attachLiveView, liveAction } from "../lib/live-view";
  * The AI Probe's browser. Unlike Explore it accepts downloads, because
  * "the file really arrived" is one of the things it checks.
  *
- * Off the allow-list (CONSOLE_QA_HOSTS) it installs the same read-only guard
+ * Without Full access (lib/console/server/projects.ts) it installs the same read-only guard
  * as Explore, on a fresh context before the first request, sign-in window
  * included: every request that is not GET or HEAD is aborted in the browser.
  * Downloads and navigation are GETs, so they still work and can be verified.
- * On an allow-listed host writes go through, like the built-in suite.
+ * With Full access writes go through, like the built-in suite.
  *
  * Signing in uses Explore's generic sign-in gate: only when a sign-in screen
  * is reached, once, asking the employee in the job chat when no login is saved.

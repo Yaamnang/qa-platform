@@ -17,7 +17,8 @@
     "qa:repeat": "tsx qa/run.ts --repeat 10",
     "db:seed": "tsx --conditions=react-server --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/seed-supabase.ts",
     "admin": "tsx --conditions=react-server scripts/admin.ts",
-    "demo": "tsx scripts/console-demo.ts"
+    "demo": "tsx scripts/console-demo.ts",
+    "admin-key": "tsx --conditions=react-server scripts/admin-key.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",

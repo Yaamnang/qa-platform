@@ -66,6 +66,7 @@ export function toGithubLinkDto(link: GithubLinkRecord | undefined): GithubLink 
     lastCheckedAt: link?.lastCheckedAt ?? null,
     lastSeenSha: link?.lastSeenSha ?? null,
     lastTriggeredAt: link?.lastTriggeredAt ?? null,
+    autoCheck: link?.autoCheck ?? true,
   };
 }
 
@@ -77,6 +78,32 @@ export function isRepoName(value: string): boolean {
 /** Branch names may contain slashes. Refused: spaces, control characters, "..", and anything that would break a URL path. */
 export function isBranchName(value: string): boolean {
   return value.length > 0 && value.length <= 255 && !/[\s~^:?*[\\\x00-\x1f]|\.\.|^\/|\/$/.test(value);
+}
+
+/**
+ * A pasted repository link as owner/repo, or null. Only github.com. A missing
+ * https://, a trailing ".git" or slash, and any extra path (/tree/main, /pulls)
+ * are allowed and dropped.
+ */
+export function parseRepoUrl(input: string): string | null {
+  const text = input.trim();
+  let url: URL;
+  try {
+    url = new URL(/^[a-z]+:\/\//i.test(text) ? text : `https://${text}`);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  if (url.username || url.password || !["github.com", "www.github.com"].includes(url.hostname.toLowerCase())) return null;
+  const [owner, name = ""] = url.pathname.split("/").filter(Boolean);
+  const repo = `${owner}/${name.replace(/\.git$/i, "")}`;
+  return isRepoName(repo) ? repo : null;
+}
+
+/** The repo a commit belongs to, from the commit link the console stores on the job (branchHead's htmlUrl). */
+export function repoOfCommitUrl(runUrl: string | null | undefined): string | null {
+  const repo = runUrl?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/commit\//)?.[1];
+  return repo && isRepoName(repo) ? repo : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +169,24 @@ export async function listRepos(token: string): Promise<GithubRepo[]> {
     if (rows.length < 100) break;
   }
   return repos;
+}
+
+export type RepoAccess = { fullName: string; defaultBranch: string } | { denied: true };
+
+/**
+ * Can the token's account push to this repo? GitHub answers 404 for a private
+ * repo the account cannot see, and lists the account's own rights in
+ * permissions on a repo it can. Push is what a collaborator with write access
+ * has, and what posting commit statuses needs.
+ */
+export async function repoAccess(token: string, repo: string): Promise<RepoAccess> {
+  const res = await api(token, `/repos/${repo}`);
+  // 403 is not here on purpose: GitHub also uses it for a spent rate limit, which is not a missing right.
+  if (res.status === 404) return { denied: true };
+  if (!res.ok) throw failed("repo lookup", res);
+  const body = (await res.json()) as { full_name: string; default_branch: string; permissions?: { push?: boolean } };
+  if (body.permissions?.push !== true) return { denied: true };
+  return { fullName: body.full_name, defaultBranch: body.default_branch };
 }
 
 export type BranchHead =

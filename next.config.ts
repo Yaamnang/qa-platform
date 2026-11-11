@@ -15,7 +15,11 @@ const nextConfig: NextConfig = {
     },
   },
   async redirects() {
-    return [{ source: "/", destination: "/workspace", permanent: false }];
+    return [
+      { source: "/", destination: "/workspace", permanent: false },
+      // The console sign-in moved to /login; the stand-in's is at /fake/login.
+      { source: "/console/login", destination: "/login", permanent: false },
+    ];
   },
 };
 

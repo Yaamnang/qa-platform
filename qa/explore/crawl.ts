@@ -1,6 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { askCode, askLogin, inbox, linked, say, SignInSkipped } from "../lib/console-link";
-import { attachLiveView, liveAction } from "../lib/live-view";
+import { CaptchaBlocked, detectCaptcha, nobodyToAsk, solveWithPerson, WIDGET_WHY, blockedByCaptcha } from "../lib/captcha";
+import { attachLiveView, CAPTCHA_RULES, liveAction, SECRET_FIELD_RULES, type SecretFieldRules } from "../lib/live-view";
 import { freshCode } from "../lib/totp";
 import { submitCode, submitPassword } from "../lib/ui";
 import { installReadOnlyGuard, SIGN_IN_WINDOW_MS, type ReadOnlyGuard } from "./readonly";
@@ -260,11 +261,13 @@ type SignInMarks = {
 const NO_MARKS: SignInMarks = { password: false, username: false, code: false, submit: false, actionOrigin: null, botWall: false };
 
 /** The attribute markSignInForm puts on the fields it chose, so Playwright can find exactly those again. */
-const SIGN_IN_ATTRIBUTE = "data-explore-signin";
+const SIGN_IN_ATTRIBUTE = SECRET_FIELD_RULES.attribute;
 
 /**
  * Finds the sign-in fields on any site, not just the stand-in, and marks them.
- * Runs in the page, so it takes no arguments and uses no imports.
+ * Runs in the page, so it uses no imports. Its only argument is the shared
+ * SECRET_FIELD_RULES (qa/lib/live-view.ts), so the live view masks exactly
+ * the kind of field this treats as a password or one-time code.
  *
  * Generic on purpose: no label text, no test id. The scope is the form that
  * holds the visible password field. The username is the visible input in that
@@ -273,8 +276,8 @@ const SIGN_IN_ATTRIBUTE = "data-explore-signin";
  * one element gets each mark, so a page with two "Email" fields (a header
  * search, a mobile and a desktop copy) cannot cause a strict-mode error.
  */
-function markSignInForm(): SignInMarks {
-  const ATTRIBUTE = "data-explore-signin";
+function markSignInForm(rules: SecretFieldRules): SignInMarks {
+  const ATTRIBUTE = rules.attribute;
   for (const el of Array.from(document.querySelectorAll(`[${ATTRIBUTE}]`))) el.removeAttribute(ATTRIBUTE);
 
   const visible = (el: Element): boolean => {
@@ -328,9 +331,9 @@ function markSignInForm(): SignInMarks {
   const codeCandidates = inputs.filter((el) => !["hidden", "checkbox", "radio", "submit", "button"].includes(typeOf(el)));
   const maxLength = (el: HTMLInputElement) => Number(el.getAttribute("maxlength") || 0);
   const code =
-    codeCandidates.find((el) => (el.getAttribute("autocomplete") || "").toLowerCase() === "one-time-code") ||
-    codeCandidates.find((el) => el.getAttribute("inputmode") === "numeric" && maxLength(el) >= 6 && maxLength(el) <= 8) ||
-    codeCandidates.find((el) => /code/i.test(labelOf(el)) && !/(promo|coupon|zip|postal|post|country|area|discount)\s*code/i.test(labelOf(el)));
+    codeCandidates.find((el) => (el.getAttribute("autocomplete") || "").toLowerCase() === rules.codeAutocomplete) ||
+    codeCandidates.find((el) => el.getAttribute("inputmode") === "numeric" && maxLength(el) >= rules.codeMinLength && maxLength(el) <= rules.codeMaxLength) ||
+    codeCandidates.find((el) => new RegExp(rules.codeWord, "i").test(labelOf(el)) && !new RegExp(rules.notCodeSource, "i").test(labelOf(el)));
   if (code) {
     code.setAttribute(ATTRIBUTE, "code");
     const form = code.closest("form");
@@ -343,7 +346,7 @@ function markSignInForm(): SignInMarks {
 
 async function readSignInMarks(page: Page): Promise<SignInMarks> {
   await page.evaluate("globalThis.__name = globalThis.__name || ((fn) => fn);").catch(() => {});
-  return page.evaluate(markSignInForm).catch(() => NO_MARKS);
+  return page.evaluate(markSignInForm, SECRET_FIELD_RULES).catch(() => NO_MARKS);
 }
 
 const marked = (page: Page, name: "password" | "username" | "code" | "submit") => page.locator(`[${SIGN_IN_ATTRIBUTE}="${name}"]`).first();
@@ -371,7 +374,7 @@ async function shownAlert(page: Page): Promise<string> {
  * `field`, and waits for navigation or for the field to go away. The window
  * closes once the page has settled, or by itself after 15 seconds.
  */
-async function submitSignInForm(page: Page, guard: ReadOnlyGuard, field: Locator, hasSubmit: boolean, actionOrigin: string | null): Promise<void> {
+async function submitSignInForm(page: Page, guard: ReadOnlyGuard, field: Locator, hasSubmit: boolean, actionOrigin: string | null, captcha = false): Promise<void> {
   const before = page.url();
   const submit = marked(page, "submit");
   await liveAction(page, "Submitting the sign-in form", hasSubmit ? submit : field);
@@ -382,6 +385,8 @@ async function submitSignInForm(page: Page, guard: ReadOnlyGuard, field: Locator
     await Promise.race([
       page.waitForURL((url) => url.href !== before, { timeout: SIGN_IN_WINDOW_MS }),
       field.waitFor({ state: "hidden", timeout: SIGN_IN_WINDOW_MS }),
+      // With a CAPTCHA, a refused answer shows quickly and is worth not waiting 15 seconds for.
+      ...(captcha ? [page.locator(CAPTCHA_RULES.errorSelector).filter({ visible: true }).first().waitFor({ timeout: SIGN_IN_WINDOW_MS })] : []),
     ]).catch(() => {});
     await settle(page);
   } finally {
@@ -425,7 +430,7 @@ async function openOrganization(page: Page, notes: string[]): Promise<string | n
  * site the read-only guard blocks whatever it tries.
  */
 async function standInSignIn(page: Page, credentials: Credentials): Promise<void> {
-  await liveAction(page, "Opening /login");
+  await liveAction(page, "Opening /fake/login");
   await submitPassword(page, credentials.email, credentials.password);
   const code = credentials.totpSecret ? await freshCode(credentials.totpSecret) : null;
   if (!code) throw new Error("no authenticator key for the one-time code");
@@ -435,7 +440,6 @@ async function standInSignIn(page: Page, credentials: Credentials): Promise<void
   if (/\/login\/?$/.test(new URL(page.url()).pathname)) throw new Error(`the stand-in kept the sign-in page open.${await shownAlert(page)}`);
 }
 
-const BOT_WALL = "This site blocks automated sign-in with a captcha. Explored public pages only.";
 
 /** Signing in, at most once per run, and only when the walk reaches a sign-in screen. */
 export type SignInGate = {
@@ -444,6 +448,8 @@ export type SignInGate = {
   readonly signedIn: boolean;
   /** The organization the stand-in's picker opened, if it showed one. */
   readonly organization: string | null;
+  /** Set when a CAPTCHA stopped the sign-in and nobody could answer it: the line for the report. */
+  readonly blocked: string | null;
   /**
    * If the page is a sign-in screen and no attempt was made yet, tries once.
    * Returns true when it signed in. Never throws: a sign-in that fails is a
@@ -459,6 +465,7 @@ export function signInGate(context: GateContext): SignInGate {
   let attempted = false;
   let signedIn = false;
   let organization: string | null = null;
+  let blocked: string | null = null;
 
   /** One line in the notes, the log and the chat. */
   const tell = async (line: string, event: string) => {
@@ -469,12 +476,20 @@ export function signInGate(context: GateContext): SignInGate {
 
   type Outcome = { kind: "signed-in" } | { kind: "stopped" } | { kind: "unfillable"; why: string };
 
+  /** A CAPTCHA nobody can answer: a "could not test" line, never a product failure. */
+  const block = async (line: string): Promise<Outcome> => {
+    blocked = line;
+    await tell(line, "captcha-blocked");
+    return { kind: "stopped" };
+  };
+
   async function generic(page: Page, where: string): Promise<Outcome> {
     let marks = await readSignInMarks(page);
-    if (marks.botWall) {
-      await tell(BOT_WALL, "bot-wall");
-      return { kind: "stopped" };
-    }
+    const captcha = await detectCaptcha(page);
+    if (captcha === "widget") return block(blockedByCaptcha(where, WIDGET_WHY));
+    if (marks.botWall) return block(blockedByCaptcha(where, "the page shows a bot check"));
+    const nobody = captcha === "text" ? nobodyToAsk() : null;
+    if (nobody) return block(blockedByCaptcha(where, nobody));
 
     if (!credentials.password) {
       if (!linked()) {
@@ -498,24 +513,37 @@ export function signInGate(context: GateContext): SignInGate {
     if (!marks.password) return { kind: "unfillable", why: "the password field was gone by the time the login arrived" };
 
     log("• Signing in…");
-    try {
+    const fillLogin = async () => {
       if (marks.username) {
         await liveAction(page, "Typing the email", marked(page, "username"));
         await marked(page, "username").fill(credentials.email, { timeout: 5_000 });
       }
-      const passwordField = marked(page, "password");
-      await liveAction(page, "Typing the password", passwordField);
-      await passwordField.fill(credentials.password, { timeout: 5_000 });
-      await submitSignInForm(page, guard, passwordField, marks.submit, marks.actionOrigin);
+      await liveAction(page, "Typing the password", marked(page, "password"));
+      await marked(page, "password").fill(credentials.password, { timeout: 5_000 });
+    };
+    try {
+      if (captcha === "text") {
+        // A person types the CAPTCHA; the rest of the form is filled again before each try.
+        await solveWithPerson(page, where, {
+          context: "sign-in",
+          fillRest: async () => {
+            marks = await readSignInMarks(page);
+            if (!marks.password) throw new Error("the password field was gone");
+            await fillLogin();
+          },
+          submit: () => submitSignInForm(page, guard, marked(page, "password"), marks.submit, marks.actionOrigin, true),
+        });
+      } else {
+        await fillLogin();
+        await submitSignInForm(page, guard, marked(page, "password"), marks.submit, marks.actionOrigin);
+      }
     } catch (error) {
+      if (error instanceof CaptchaBlocked) return block(error.message);
       return { kind: "unfillable", why: (error as Error).message.split("\n")[0] };
     }
 
     marks = await readSignInMarks(page);
-    if (marks.botWall) {
-      await tell(BOT_WALL, "bot-wall");
-      return { kind: "stopped" };
-    }
+    if (marks.botWall) return block(blockedByCaptcha(whereIs(page, origin), "the page shows a bot check"));
     if (marks.password) {
       await tell(`Sign-in at ${where} did not complete: the password was not accepted.${await shownAlert(page)} Explored public pages only.`, "sign-in-failed");
       return { kind: "stopped" };
@@ -555,10 +583,7 @@ export function signInGate(context: GateContext): SignInGate {
         return { kind: "stopped" };
       }
       marks = await readSignInMarks(page);
-      if (marks.botWall) {
-        await tell(BOT_WALL, "bot-wall");
-        return { kind: "stopped" };
-      }
+      if (marks.botWall) return block(blockedByCaptcha(whereIs(page, origin), "the page shows a bot check"));
       if (marks.code || marks.password) {
         await tell(`Sign-in at ${where} did not complete: the one-time code was not accepted.${await shownAlert(page)} Explored public pages only.`, "sign-in-failed");
         return { kind: "stopped" };
@@ -576,6 +601,9 @@ export function signInGate(context: GateContext): SignInGate {
     },
     get organization() {
       return organization;
+    },
+    get blocked() {
+      return blocked;
     },
     async maybeSignIn(page) {
       if (attempted || !(await isSignInScreen(page))) return false;
