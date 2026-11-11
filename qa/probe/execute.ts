@@ -171,6 +171,8 @@ export type ExecuteOptions = {
   origin: string;
   readOnly: boolean;
   calibrate: boolean;
+  /** Epoch ms. Journeys not started by then are not run, and are named in the result. */
+  deadline?: number;
   workDir: string;
   /** Where the screenshots of failed journeys go: qa-results/<run id>/images. */
   imagesDir: string;
@@ -502,10 +504,15 @@ function saveShot(options: ExecuteOptions, result: JourneyResult, shot: Shot | u
   }
 }
 
-export async function runJourneys(options: ExecuteOptions, journeys: ProbeJourney[]): Promise<{ results: JourneyResult[]; recorded: ProbeJourney[] }> {
+export async function runJourneys(options: ExecuteOptions, journeys: ProbeJourney[]): Promise<{ results: JourneyResult[]; recorded: ProbeJourney[]; notRun: string[] }> {
   const results: JourneyResult[] = [];
   const recorded: ProbeJourney[] = [];
   for (const [index, journey] of journeys.entries()) {
+    if (options.deadline && Date.now() > options.deadline) {
+      const notRun = journeys.slice(index).map((j) => j.name);
+      options.log(`• Time limit reached. ${notRun.length} journey(s) not run.`);
+      return { results, recorded, notRun };
+    }
     options.log(`• Journey ${index + 1}/${journeys.length}: ${journey.name} (from ${journey.start})`);
     await say(`Journey ${index + 1} of ${journeys.length}: ${journey.name}.`, "step");
     let run = await attempt(options, journey);
@@ -526,5 +533,5 @@ export async function runJourneys(options: ExecuteOptions, journeys: ProbeJourne
     const r = run.result;
     await say(r.outcome === "failed" ? `${journey.name}: failed. ${r.headline}.` : `${journey.name}: ${r.outcome}.`, "step");
   }
-  return { results, recorded };
+  return { results, recorded, notRun: [] };
 }

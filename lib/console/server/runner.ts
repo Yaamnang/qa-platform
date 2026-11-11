@@ -61,7 +61,8 @@ const SCRIPT: Record<JobKind, string> = {
  */
 const TIMEOUT: Record<JobKind, { variable: string; defaultMs: number }> = {
   explore: { variable: "CONSOLE_EXPLORE_TIMEOUT_MS", defaultMs: 5 * 60_000 },
-  qa: { variable: "CONSOLE_QA_TIMEOUT_MS", defaultMs: 10 * 60_000 },
+  // 30 minutes: the AI Probe explores a whole site (qa/probe/limits.ts allows it 25).
+  qa: { variable: "CONSOLE_QA_TIMEOUT_MS", defaultMs: 30 * 60_000 },
 };
 
 const LOG_LINES = 200;

@@ -10,7 +10,8 @@ const env = process.env;
 /** Repo root. QA commands always run from here (npm scripts). */
 export const ROOT = process.cwd();
 
-export type Target = "local" | "staging" | "live";
+/** local: started by qa/run.ts. stand-in: a deployed test copy of the platform. */
+export type Target = "local" | "stand-in" | "staging" | "live";
 
 export const config = {
   baseURL: env.QA_BASE_URL ?? "http://localhost:3100",
@@ -37,6 +38,13 @@ export const config = {
     totpSecret: env.QA_VIEWER_TOTP_SECRET ?? "",
   },
 
+  /**
+   * The target's sign-in page. /fake/login is the stand-in embedded in this
+   * repo. QA_SIGNIN_PATH overrides it; qa/run.ts sets it from the target's
+   * /api/health (signInPath) when testing a deployed copy.
+   */
+  signInPath: env.QA_SIGNIN_PATH?.startsWith("/") ? env.QA_SIGNIN_PATH : "/fake/login",
+
   /** The only tenant the bot may ever operate in. Checked after every sign-in. */
   expectedTenant: env.QA_EXPECTED_TENANT ?? "qa-synthetic",
   /** Markers planted in a second synthetic tenant. Seeing one = isolation breach. */
@@ -52,6 +60,12 @@ export const config = {
   authDir: path.join(ROOT, "qa", ".auth"),
   storageState: path.join(ROOT, "qa", ".auth", "state.json"),
 };
+
+/** Sign-up creates accounts that cannot be deleted, so only on a stand-in, local or deployed. */
+export const signUpAllowed = config.target === "local" || config.target === "stand-in";
+
+/** Matches a URL that is the sign-in page, for "sent to sign-in" checks. */
+export const signInUrl = new RegExp(config.signInPath.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&") + "$");
 
 /** Prefix for everything the bot creates, so it can find and clean up only its own data. */
 export const QA_PREFIX = "qa-run-";

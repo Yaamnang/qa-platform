@@ -57,7 +57,21 @@ export type ProbeJourney = {
   name: string;
   /** Same-origin path the journey starts from. */
   start: string;
+  /** The explored page (its pattern, for example /jobs/:id) this journey covers. Absent in plans recorded before pages were tracked. */
+  page?: string;
   steps: ProbeStep[];
+};
+
+/** One explored page pattern and what became of it, for the report. */
+export type ExploredPage = {
+  /** Pattern, for example /jobs/:id. */
+  page: string;
+  /** A real path that was opened, for example /jobs/job_a1b2. */
+  example: string;
+  /** Names of the journeys that cover it. */
+  journeys: string[];
+  /** Why it has no journey, when it has none: "only links", "could not plan", "left out: ...". */
+  note?: string;
 };
 
 export type ProbePlan = {
@@ -66,6 +80,8 @@ export type ProbePlan = {
   model: string;
   createdAt: string;
   journeys: ProbeJourney[];
+  /** The pages explored when the plan was made, so a replay can still report them. */
+  pages?: ExploredPage[];
 };
 
 export type StepStatus = "passed" | "failed" | "skipped" | "not-run";
@@ -106,4 +122,11 @@ export type ProbeInfo = {
   tokens: { input: number; output: number };
   approxCostUsd: number;
   readOnly: boolean;
+  /** Model calls made (cache hits not counted) and cache hits. Planning runs only. */
+  calls?: number;
+  cachedCalls?: number;
+  /** Every page pattern explored, with the journeys that cover it. */
+  pages?: ExploredPage[];
+  /** One line each time a ceiling or a failed batch left something out. */
+  limits?: string[];
 };

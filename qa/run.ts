@@ -81,6 +81,23 @@ async function healthy(baseURL: string): Promise<boolean> {
   }
 }
 
+/**
+ * What a deployed target says about itself at GET /api/health: whether it is
+ * a stand-in (a test copy of the platform, see qa/probe/detect.ts) and where
+ * its sign-in page is. Anything unexpected counts as an ordinary site.
+ */
+async function targetInfo(baseURL: string): Promise<{ standIn: boolean; signInPath?: string }> {
+  try {
+    const res = await fetch(new URL("/api/health", baseURL), { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return { standIn: false };
+    const body = (await res.json()) as { standIn?: unknown; signInPath?: unknown };
+    const signInPath = typeof body.signInPath === "string" && body.signInPath.startsWith("/") ? body.signInPath : undefined;
+    return { standIn: body.standIn === true, signInPath };
+  } catch {
+    return { standIn: false };
+  }
+}
+
 async function startServer(port: number, bugs: string, aiMode: string, creds: Creds, label: string): Promise<ChildProcess> {
   const baseURL = `http://localhost:${port}`;
   if (await healthy(baseURL)) {
@@ -127,7 +144,7 @@ async function stopServer(child: ChildProcess | null) {
   await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
 }
 
-async function runSuite(opts: { baseURL: string; creds: Creds; target: string; quiet: boolean }): Promise<Summary> {
+async function runSuite(opts: { baseURL: string; creds: Creds; target: string; quiet: boolean; signInPath?: string }): Promise<Summary> {
   const runId = newRunId();
   const resultsDir = path.join("qa-results", runId);
   const env = {
@@ -143,6 +160,8 @@ async function runSuite(opts: { baseURL: string; creds: Creds; target: string; q
     QA_VIEWER_PASSWORD: opts.creds.viewer.password,
     QA_VIEWER_TOTP_SECRET: opts.creds.viewer.totpSecret,
     QA_ALLOWED_HOSTS: process.env.QA_ALLOWED_HOSTS ?? `localhost,127.0.0.1,${new URL(opts.baseURL).hostname}`,
+    // The target's own sign-in page, unless the environment names one.
+    ...(opts.signInPath && !process.env.QA_SIGNIN_PATH ? { QA_SIGNIN_PATH: opts.signInPath } : {}),
     ...(args.grep ? { QA_GREP: args.grep } : {}),
   };
   const pwArgs = [PW_CLI, "test", "--config", path.join("qa", "playwright.config.ts")];
@@ -215,7 +234,12 @@ async function main(): Promise<number> {
   const external = args.target ?? args["base-url"];
   const port = Number(args.port);
   const baseURL = external ?? `http://localhost:${port}`;
-  const target = process.env.QA_TARGET ?? (external ? "staging" : "local");
+  // A deployed stand-in (its /api/health says standIn) is a test copy like the
+  // local one, so every test runs, sign-up included: target "stand-in". Any
+  // other deployment is "staging" unless QA_TARGET says otherwise.
+  const info = external ? await targetInfo(baseURL) : { standIn: false };
+  const target = process.env.QA_TARGET ?? (external ? (info.standIn ? "stand-in" : "staging") : "local");
+  const signInPath = "signInPath" in info ? info.signInPath : undefined;
 
   // Fresh throw-away credentials for every local run: nothing to leak, nothing to commit.
   const throwAway = (email: string): Account => ({ email, password: randomBytes(18).toString("base64url"), totpSecret: newTotpSecret() });
@@ -316,7 +340,7 @@ async function main(): Promise<number> {
   try {
     if (repeat === 1) {
       await say("Starting the probe. The browser opens the sign-in page first.", "start");
-      const s = await runSuite({ baseURL, creds, target, quiet: args.quiet! });
+      const s = await runSuite({ baseURL, creds, target, quiet: args.quiet!, signInPath });
       printSummary(s);
       await say(verdictNote(s), "verdict");
       return exitCodeFor(s);
@@ -325,7 +349,7 @@ async function main(): Promise<number> {
     const runs: Summary[] = [];
     for (let i = 1; i <= repeat; i++) {
       log(`• Stability run ${i}/${repeat}…`);
-      const s = await runSuite({ baseURL, creds, target, quiet: true });
+      const s = await runSuite({ baseURL, creds, target, quiet: true, signInPath });
       runs.push(s);
       log(`  → ${s.verdict} (${s.counts.passed} passed, ${s.counts.failed} failed, ${s.counts.flaky} flaky) signature ${signature(s)}`);
     }

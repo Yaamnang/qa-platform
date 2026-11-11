@@ -1,4 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { config } from "../lib/config";
 import { askCode, askLogin, inbox, linked, say, SignInSkipped } from "../lib/console-link";
 import { CaptchaBlocked, detectCaptcha, nobodyToAsk, solveWithPerson, WIDGET_WHY, blockedByCaptcha } from "../lib/captcha";
 import { attachLiveView, CAPTCHA_RULES, liveAction, SECRET_FIELD_RULES, type SecretFieldRules } from "../lib/live-view";
@@ -45,20 +46,27 @@ export class ExploreUnavailable extends Error {}
 /** At most this many pages per route template, so 40 job pages do not fill the map. */
 export const MAX_PER_TEMPLATE = 2;
 
-/** Links the crawler must never follow, even though following them would be a GET. */
-export const NEVER_FOLLOW = /(^|\/)(logout|signout|sign-out)(\/|$)/i;
+/** Links the crawler must never follow, even though following them would be a GET: signing out, and anything destructive. */
+export const NEVER_FOLLOW = /(^|\/)(logout|log-out|signout|sign-out|delete|remove|destroy|unsubscribe)(\/|$)/i;
 
 export const DOWNLOAD_EXTENSION = /\.(csv|json|pdf|xlsx|xls|zip|txt)$/i;
 
-/** /jobs/job_a1b2 and /jobs/job_c3d4 are the same page with different data. */
+const looksLikeId = (value: string): boolean =>
+  /^(job|doc|usr|t|org|inv)_[\w-]+$/i.test(value) || /^\d+$/.test(value) || /^[0-9a-f-]{12,}$/i.test(value);
+
+/**
+ * /jobs/job_a1b2 and /jobs/job_c3d4 are the same page with different data.
+ * The query is kept, so /settings?tab=team and /settings?tab=billing stay two
+ * pages, but an id-looking value collapses too: ?page=2 and ?page=3 are one.
+ */
 export function templateOf(route: string): string {
-  const [pathname] = route.split("?");
-  const parts = pathname.split("/").map((segment) =>
-    /^(job|doc|usr|t|org|inv)_[\w-]+$/i.test(segment) || /^\d+$/.test(segment) || /^[0-9a-f-]{12,}$/i.test(segment)
-      ? ":id"
-      : segment,
-  );
-  return parts.join("/") || "/";
+  const [pathname, query] = route.split("?");
+  const parts = pathname.split("/").map((segment) => (looksLikeId(segment) ? ":id" : segment));
+  const base = parts.join("/") || "/";
+  if (!query) return base;
+  const params = new URLSearchParams(query);
+  const kept = [...params.keys()].sort().map((key) => `${key}=${looksLikeId(params.get(key) ?? "") ? ":id" : params.get(key)}`);
+  return `${base}?${kept.join("&")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -256,9 +264,11 @@ type SignInMarks = {
   actionOrigin: string | null;
   /** A captcha or bot challenge is on screen. */
   botWall: boolean;
+  /** Every password field on screen belongs to a sign-up (or change-password) form, which is never filled. */
+  signUp: boolean;
 };
 
-const NO_MARKS: SignInMarks = { password: false, username: false, code: false, submit: false, actionOrigin: null, botWall: false };
+const NO_MARKS: SignInMarks = { password: false, username: false, code: false, submit: false, actionOrigin: null, botWall: false, signUp: false };
 
 /** The attribute markSignInForm puts on the fields it chose, so Playwright can find exactly those again. */
 const SIGN_IN_ATTRIBUTE = SECRET_FIELD_RULES.attribute;
@@ -275,6 +285,11 @@ const SIGN_IN_ATTRIBUTE = SECRET_FIELD_RULES.attribute;
  * tel input before the password field. Only visible elements count and only
  * one element gets each mark, so a page with two "Email" fields (a header
  * search, a mobile and a desktop copy) cannot cause a strict-mode error.
+ *
+ * A sign-up form is never chosen. A form counts as sign-up when it has two
+ * password fields, a confirm-password or name field, or a heading or submit
+ * button that says sign up, create account or register. That also keeps the
+ * gate off a change-password form.
  */
 function markSignInForm(rules: SecretFieldRules): SignInMarks {
   const ATTRIBUTE = rules.attribute;
@@ -310,7 +325,41 @@ function markSignInForm(rules: SecretFieldRules): SignInMarks {
   );
   const botWall = challengeFrame || challengeText;
 
-  const password = inputs.find((el) => typeOf(el) === "password");
+  // Sign-up or sign-in: decided per form, from the fields, the heading and the submit button.
+  const SIGN_UP_WORDS = /\b(sign[\s-]?up|create (an |your |new )?account|register|registration|join (now|us|free))\b/i;
+  const wordsOf = (el: Element): string =>
+    [el.getAttribute("name"), el.getAttribute("id"), el.getAttribute("autocomplete"), el.getAttribute("placeholder"), el.getAttribute("aria-label"),
+      ...Array.from((el as HTMLInputElement).labels ?? []).map((l) => l.textContent)].join(" ");
+  const headingFor = (form: HTMLFormElement | null): string => {
+    const own = form?.querySelector("legend, h1, h2, h3");
+    if (own) return own.textContent || "";
+    const anchor = form ?? inputs.find((el) => typeOf(el) === "password");
+    let best = "";
+    for (const heading of Array.from(document.querySelectorAll("h1, h2, h3"))) {
+      if (anchor && heading.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING) best = heading.textContent || "";
+    }
+    return best;
+  };
+  const isSignUp = (field: HTMLInputElement): boolean => {
+    const form = field.closest("form");
+    const scope = inputs.filter((el) => (form ? el.closest("form") === form : true));
+    if (scope.filter((el) => typeOf(el) === "password").length >= 2) return true;
+    if (scope.some((el) => /confirm|repeat|retype|re-?enter/i.test(wordsOf(el)))) return true;
+    const nameField = scope.some((el) => {
+      const auto = (el.getAttribute("autocomplete") || "").toLowerCase();
+      if (["name", "given-name", "family-name"].includes(auto)) return true;
+      const label = [el.getAttribute("name"), el.getAttribute("id"), ...Array.from(el.labels ?? []).map((l) => l.textContent)].join(" ").trim();
+      return /\b(full|first|last|given|family|display)[\s_-]?name\b|^name$/i.test(label) || /^(full|first|last|display)?_?name$/i.test(el.getAttribute("name") || "");
+    });
+    if (nameField) return true;
+    const submit = submitIn(form);
+    const submitText = submit ? `${submit.textContent || ""} ${submit.getAttribute("value") || ""} ${submit.getAttribute("aria-label") || ""}` : "";
+    return SIGN_UP_WORDS.test(headingFor(form)) || SIGN_UP_WORDS.test(submitText);
+  };
+
+  const passwords = inputs.filter((el) => typeOf(el) === "password");
+  const password = passwords.find((el) => !isSignUp(el));
+  if (!password && passwords.length) return { ...NO_MARKS, botWall, signUp: true };
   if (password) {
     password.setAttribute(ATTRIBUTE, "password");
     const form = password.closest("form");
@@ -323,7 +372,7 @@ function markSignInForm(rules: SecretFieldRules): SignInMarks {
     if (username) username.setAttribute(ATTRIBUTE, "username");
     const submit = submitIn(form);
     if (submit) submit.setAttribute(ATTRIBUTE, "submit");
-    return { password: true, username: !!username, code: false, submit: !!submit, actionOrigin: originOf(form), botWall };
+    return { password: true, username: !!username, code: false, submit: !!submit, actionOrigin: originOf(form), botWall, signUp: false };
   }
 
   const labelOf = (el: HTMLInputElement): string =>
@@ -339,9 +388,9 @@ function markSignInForm(rules: SecretFieldRules): SignInMarks {
     const form = code.closest("form");
     const submit = submitIn(form);
     if (submit) submit.setAttribute(ATTRIBUTE, "submit");
-    return { password: false, username: false, code: true, submit: !!submit, actionOrigin: originOf(form), botWall };
+    return { password: false, username: false, code: true, submit: !!submit, actionOrigin: originOf(form), botWall, signUp: false };
   }
-  return { password: false, username: false, code: false, submit: false, actionOrigin: null, botWall };
+  return { password: false, username: false, code: false, submit: false, actionOrigin: null, botWall, signUp: false };
 }
 
 async function readSignInMarks(page: Page): Promise<SignInMarks> {
@@ -351,9 +400,87 @@ async function readSignInMarks(page: Page): Promise<SignInMarks> {
 
 const marked = (page: Page, name: "password" | "username" | "code" | "submit") => page.locator(`[${SIGN_IN_ATTRIBUTE}="${name}"]`).first();
 
-/** A page is a sign-in screen when it shows a visible password field. Nothing else is needed to tell. */
+/** A page is a sign-in screen when it shows a visible password field that is not part of a sign-up form. */
 export async function isSignInScreen(page: Page): Promise<boolean> {
-  return page.locator('input[type="password"]:visible').first().isVisible().catch(() => false);
+  if (!(await page.locator('input[type="password"]:visible').first().isVisible().catch(() => false))) return false;
+  return (await readSignInMarks(page)).password;
+}
+
+/** Common sign-in paths, tried last, in this order. */
+export const SIGN_IN_PATHS = ["/login", "/signin", "/sign-in", "/auth/login"];
+
+/** A link or button whose whole name is "Sign in", "Log in" or "Login". "Sign in with Google" does not count. */
+const SIGN_IN_NAME = /^\W*(sign[\s-]?in|log[\s-]?in|login)\W*$/i;
+
+/** The sign-in path a site states at GET /api/health ({ signInPath: "/login" }), if it states one. */
+export async function signInPathFromHealth(origin: string): Promise<string | null> {
+  try {
+    const res = await fetch(new URL("/api/health", origin), { signal: AbortSignal.timeout(5_000), redirect: "manual" });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { signInPath?: unknown };
+    const p = body.signInPath;
+    return typeof p === "string" && p.startsWith("/") && !p.startsWith("//") ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Looks for the sign-in page and leaves the browser on it. In order: the path
+ * the site's /api/health names; the page a signed-out visitor was sent to; a
+ * link or button named sign in, log in or login; then SIGN_IN_PATHS. The first
+ * page with a real sign-in form wins (a sign-up form does not count). Returns
+ * where it was found, or null with the browser back on `start`.
+ */
+export async function findSignInPage(page: Page, origin: string, start: string, log: (line: string) => void): Promise<string | null> {
+  const open = async (route: string): Promise<boolean> => {
+    try {
+      await liveAction(page, `Opening ${route}`);
+      await page.goto(route, { waitUntil: "domcontentloaded", timeout: 20_000 });
+      await settle(page);
+      return waitForSignInForm(page);
+    } catch {
+      return false;
+    }
+  };
+  const found = (how: string) => {
+    const where = whereIs(page, origin);
+    log(`• Sign-in page: ${where} (${how}).`);
+    return where;
+  };
+
+  const stated = await signInPathFromHealth(origin);
+  if (stated && (await open(stated))) return found("named by the site's /api/health");
+
+  // Where a signed-out visitor ends up. Client-side redirects can take a moment.
+  if (stated) await open(start);
+  if (await waitForSignInForm(page)) return found("a signed-out visitor is sent there");
+
+  for (const role of ["link", "button"] as const) {
+    const control = page.getByRole(role, { name: SIGN_IN_NAME }).filter({ visible: true }).first();
+    if (!(await control.count().catch(() => 0))) continue;
+    try {
+      await liveAction(page, `Clicking '${((await control.innerText({ timeout: 2_000 })) || "Sign in").trim()}'`, control);
+      await control.click({ timeout: 5_000 });
+      await settle(page);
+      if (await waitForSignInForm(page)) return found(`the page's ${role} to sign in`);
+    } catch {
+      // Not clickable after all. Try the usual paths.
+    }
+  }
+
+  for (const route of SIGN_IN_PATHS) {
+    if (route === stated) continue;
+    if (await open(route)) return found("a common sign-in path");
+  }
+  await open(start);
+  return null;
+}
+
+/** True once a sign-in form is on screen, waiting a few seconds for one that renders in the browser. */
+async function waitForSignInForm(page: Page): Promise<boolean> {
+  await page.locator('input[type="password"]:visible').first().waitFor({ timeout: 3_000 }).catch(() => {});
+  return isSignInScreen(page);
 }
 
 /** Where the page is, for notes: the path on the target, or host and path when it is somewhere else. */
@@ -430,7 +557,7 @@ async function openOrganization(page: Page, notes: string[]): Promise<string | n
  * site the read-only guard blocks whatever it tries.
  */
 async function standInSignIn(page: Page, credentials: Credentials): Promise<void> {
-  await liveAction(page, "Opening /fake/login");
+  await liveAction(page, `Opening ${config.signInPath}`);
   await submitPassword(page, credentials.email, credentials.password);
   const code = credentials.totpSecret ? await freshCode(credentials.totpSecret) : null;
   if (!code) throw new Error("no authenticator key for the one-time code");
@@ -450,12 +577,19 @@ export type SignInGate = {
   readonly organization: string | null;
   /** Set when a CAPTCHA stopped the sign-in and nobody could answer it: the line for the report. */
   readonly blocked: string | null;
+  /** Where the sign-in form was, once one was handled. The crawl does not open it again once signed in. */
+  readonly signInPage: string | null;
   /**
    * If the page is a sign-in screen and no attempt was made yet, tries once.
    * Returns true when it signed in. Never throws: a sign-in that fails is a
    * note, and the walk carries on with public pages.
    */
   maybeSignIn(page: Page): Promise<boolean>;
+  /**
+   * Finds the sign-in page first (findSignInPage) and signs in there. Says
+   * "I could not find a sign-in page" when there is none. Never throws.
+   */
+  seekAndSignIn(page: Page, start: string): Promise<boolean>;
 };
 
 export type GateContext = Pick<CrawlOptions, "origin" | "credentials" | "log"> & { guard: ReadOnlyGuard; notes: string[] };
@@ -466,6 +600,7 @@ export function signInGate(context: GateContext): SignInGate {
   let signedIn = false;
   let organization: string | null = null;
   let blocked: string | null = null;
+  let signInPage: string | null = null;
 
   /** One line in the notes, the log and the chat. */
   const tell = async (line: string, event: string) => {
@@ -605,10 +740,23 @@ export function signInGate(context: GateContext): SignInGate {
     get blocked() {
       return blocked;
     },
+    get signInPage() {
+      return signInPage;
+    },
+    async seekAndSignIn(page, start) {
+      if (attempted) return signedIn;
+      const where = await findSignInPage(page, origin, start, log).catch(() => null);
+      if (!where) {
+        await tell("I could not find a sign-in page. Exploring public pages only.", "sign-in-skipped");
+        return false;
+      }
+      return this.maybeSignIn(page);
+    },
     async maybeSignIn(page) {
       if (attempted || !(await isSignInScreen(page))) return false;
       attempted = true;
       const where = whereIs(page, origin);
+      signInPage = where;
       log(`• Sign-in screen found at ${where}.`);
       try {
         let outcome = await generic(page, where);
@@ -787,6 +935,99 @@ export async function openSession(options: SessionOptions, startedAt: string, bl
   }
 }
 
+export type WalkOptions = {
+  page: Page;
+  gate: SignInGate;
+  apiCalls: Set<string>;
+  notes: string[];
+  origin: string;
+  /** Where the walk starts, all at depth 0. */
+  starts: string[];
+  maxPages: number;
+  maxDepth: number;
+  budgetMs: number;
+  log: (line: string) => void;
+  /** Called before each page is opened, for a chat line. */
+  beforeVisit?: (route: string) => Promise<void>;
+  /** Called after each page is read, while the browser is still on it. */
+  afterVisit?: (map: PageMap) => Promise<void>;
+};
+
+export type WalkResult = {
+  pages: PageMap[];
+  stoppedBecause: string;
+  /** Routes found but not opened because a limit was reached first. */
+  notVisited: string[];
+};
+
+/**
+ * Breadth-first walk over same-origin links, by URL only. Used by explore()
+ * below and by the AI Probe (qa/probe/pages.ts). At most MAX_PER_TEMPLATE
+ * pages per route template, so a list of 500 rows is one page pattern.
+ * Stops at maxPages, maxDepth or the time budget, whichever comes first.
+ */
+export async function walk(options: WalkOptions): Promise<WalkResult> {
+  const { page, gate, apiCalls, notes, origin } = options;
+  const pages: PageMap[] = [];
+  const queue: Array<{ route: string; depth: number }> = options.starts.map((route) => ({ route, depth: 0 }));
+  const queued = new Set<string>(options.starts);
+  const perTemplate = new Map<string, number>();
+  const deadline = Date.now() + options.budgetMs;
+  let stoppedBecause = "there was nothing left to explore";
+  let hitDepthCap = false;
+  // Once signed in, the sign-in page is not opened again: on some sites that signs the visitor out.
+  const isSignInPage = (route: string) => gate.signedIn && !!gate.signInPage && route.split("?")[0] === gate.signInPage.split("?")[0];
+
+  while (queue.length) {
+    if (pages.length >= options.maxPages) {
+      stoppedBecause = `the page cap of ${options.maxPages} was reached`;
+      break;
+    }
+    if (Date.now() >= deadline) {
+      stoppedBecause = `the time budget of ${Math.round(options.budgetMs / 1000)}s ran out`;
+      break;
+    }
+    const next = queue.shift()!;
+    if (isSignInPage(next.route)) continue;
+    const template = templateOf(next.route);
+    const seenOfTemplate = perTemplate.get(template) ?? 0;
+    if (seenOfTemplate >= MAX_PER_TEMPLATE) continue;
+    perTemplate.set(template, seenOfTemplate + 1);
+
+    options.log(`  ${pages.length + 1}. ${next.route} (depth ${next.depth})`);
+    if (options.beforeVisit) await options.beforeVisit(next.route);
+    const mapped = await visit(page, next.route, next.depth, apiCalls, notes);
+    pages.push(mapped);
+    if (options.afterVisit) await options.afterVisit(mapped);
+
+    for (const link of mapped.links) {
+      if (!shouldFollow(link, origin)) continue;
+      if (queued.has(link.href)) continue;
+      if (next.depth + 1 > options.maxDepth) {
+        hitDepthCap = true;
+        continue;
+      }
+      queued.add(link.href);
+      queue.push({ route: link.href, depth: next.depth + 1 });
+    }
+
+    // Reached a sign-in screen: the gate signs in once, or notes why not.
+    // Signed in, the page it lands on is mapped next, ahead of the public
+    // pages still queued, which stay in the queue either way.
+    if (await gate.maybeSignIn(page)) {
+      const signedInLanding = pathOf(page);
+      if (new URL(page.url()).origin === origin) {
+        queued.add(signedInLanding);
+        queue.unshift({ route: signedInLanding, depth: 0 });
+      }
+    }
+  }
+  if (hitDepthCap) notes.push(`Links deeper than ${options.maxDepth} hops from the landing page were not followed.`);
+  const notVisited = [...new Set(queue.map((q) => q.route).filter((route) => !isSignInPage(route)))];
+  if (notVisited.length) notes.push(`${notVisited.length} discovered route(s) were not visited because the walk stopped first.`);
+  return { pages, stoppedBecause, notVisited };
+}
+
 const RULES_NOTE = "The employee sent directions during the walk. The built-in rules cannot follow them.";
 
 export async function explore(options: CrawlOptions): Promise<ExploreMap> {
@@ -801,62 +1042,20 @@ export async function explore(options: CrawlOptions): Promise<ExploreMap> {
     options.log(`• Exploring from ${landing} as a visitor`);
     await say(`Exploring from ${landing} as a visitor, with the built-in rules.`, "exploring");
 
-    const queue: Array<{ route: string; depth: number }> = [{ route: landing, depth: 0 }];
-    const queued = new Set<string>([landing]);
-    const perTemplate = new Map<string, number>();
-    const deadline = Date.now() + options.budgetMs;
-    let stoppedBecause = "there was nothing left to explore";
-    let hitDepthCap = false;
-
-    while (queue.length) {
-      if (pages.length >= options.maxPages) {
-        stoppedBecause = `the page cap of ${options.maxPages} was reached`;
-        break;
-      }
-      if (Date.now() >= deadline) {
-        stoppedBecause = `the time budget of ${Math.round(options.budgetMs / 1000)}s ran out`;
-        break;
-      }
-      const next = queue.shift()!;
-      const template = templateOf(next.route);
-      const seenOfTemplate = perTemplate.get(template) ?? 0;
-      if (seenOfTemplate >= MAX_PER_TEMPLATE) continue;
-      perTemplate.set(template, seenOfTemplate + 1);
-
-      options.log(`  ${pages.length + 1}. ${next.route} (depth ${next.depth})`);
-      await say(`Looking at ${next.route}.`, "page");
-      // The rules walk follows links in a fixed order, so it cannot take directions. Say so once.
-      if ((await inbox()).length && !notes.includes(RULES_NOTE)) {
-        notes.push(RULES_NOTE);
-        await say("The built-in rules follow a fixed order, so I cannot take directions. With an Anthropic key, Claude can.", "cannot-steer");
-      }
-      const mapped = await visit(page, next.route, next.depth, apiCalls, notes);
-      pages.push(mapped);
-
-      for (const link of mapped.links) {
-        if (!shouldFollow(link, options.origin)) continue;
-        if (queued.has(link.href)) continue;
-        if (next.depth + 1 > options.maxDepth) {
-          hitDepthCap = true;
-          continue;
+    const walked = await walk({
+      page, gate, apiCalls, notes, origin: options.origin, starts: [landing],
+      maxPages: options.maxPages, maxDepth: options.maxDepth, budgetMs: options.budgetMs, log: options.log,
+      beforeVisit: async (route) => {
+        await say(`Looking at ${route}.`, "page");
+        // The rules walk follows links in a fixed order, so it cannot take directions. Say so once.
+        if ((await inbox()).length && !notes.includes(RULES_NOTE)) {
+          notes.push(RULES_NOTE);
+          await say("The built-in rules follow a fixed order, so I cannot take directions. With an Anthropic key, Claude can.", "cannot-steer");
         }
-        queued.add(link.href);
-        queue.push({ route: link.href, depth: next.depth + 1 });
-      }
-
-      // Reached a sign-in screen: the gate signs in once, or notes why not.
-      // Signed in, the page it lands on is mapped next, ahead of the public
-      // pages still queued, which stay in the queue either way.
-      if (await gate.maybeSignIn(page)) {
-        const signedInLanding = pathOf(page);
-        if (new URL(page.url()).origin === options.origin) {
-          queued.add(signedInLanding);
-          queue.unshift({ route: signedInLanding, depth: 0 });
-        }
-      }
-    }
-    if (hitDepthCap) notes.push(`Links deeper than ${options.maxDepth} hops from the landing page were not followed.`);
-    if (queue.length) notes.push(`${queue.length} discovered route(s) were not visited because the walk stopped first.`);
+      },
+    });
+    pages.push(...walked.pages);
+    const stoppedBecause = walked.stoppedBecause;
     if (!gate.attempted) notes.push("No sign-in screen was reached, so only pages a visitor can see were mapped.");
 
     await context.close();

@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Page } from "@playwright/test";
-import { config, QA_PREFIX } from "../lib/config";
+import { config, QA_PREFIX, signInUrl, signUpAllowed } from "../lib/config";
 import { codeForStep } from "../lib/totp";
 import { expect, test } from "../lib/test";
 import { submitPassword } from "../lib/ui";
@@ -31,8 +31,8 @@ async function submitSignup(page: Page, details: SignupDetails) {
 
 test.describe("Sign-up", { tag: ["@auth"] }, () => {
   // Not @live-safe: every run creates an account that cannot be deleted.
-  // So it only runs against the local stand-in, never staging or live.
-  test.skip(config.target !== "local", "Sign-up creates real accounts, so it only runs against the local stand-in");
+  // So it only runs against a stand-in, local or deployed, never staging or live.
+  test.skip(!signUpAllowed, "Sign-up creates real accounts, so it only runs against a stand-in");
 
   test("a new person can sign up, connect an authenticator and land signed in", async ({ page }) => {
     const email = newEmail("signup");
@@ -99,7 +99,7 @@ test.describe("Sign-up", { tag: ["@auth"] }, () => {
       await submitPassword(page, email, password);
       await expect(page.getByRole("main").getByRole("alert"), "Signing in with the refused details should fail, because no account should exist")
         .toHaveText("Incorrect email or password.");
-      await expect(page, "A refused sign-up must not lead to authenticator setup").toHaveURL(/\/fake\/login$/);
+      await expect(page, "A refused sign-up must not lead to authenticator setup").toHaveURL(signInUrl);
     });
   });
 

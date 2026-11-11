@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { config } from "./config";
 import { liveAction } from "./live-view";
 
 /**
@@ -10,7 +11,7 @@ import { liveAction } from "./live-view";
 
 export async function submitPassword(page: Page, email: string, password: string) {
   await liveAction(page, "Opening the sign-in page");
-  await page.goto("/fake/login");
+  await page.goto(config.signInPath);
   const emailField = page.getByLabel("Email");
   await liveAction(page, "Typing the email", emailField);
   await emailField.fill(email);

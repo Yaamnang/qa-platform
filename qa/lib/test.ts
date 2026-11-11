@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test as base, expect, type Page, type Route, type TestInfo } from "@playwright/test";
-import { config, QA_PREFIX, ROOT } from "./config";
+import { config, QA_PREFIX, ROOT, signUpAllowed } from "./config";
 import { attachLiveView, liveAction } from "./live-view";
 
 /**
@@ -43,8 +43,8 @@ const ALLOWED_WRITES: Array<[string, RegExp]> = [
   ["POST", /^\/api\/team\/invites$/],
   ["DELETE", /^\/api\/team\/invites\/[\w-]+$/],
   // Sign-up creates accounts that cannot be deleted, so it is only allowed
-  // against the local stand-in, never staging or live.
-  ...(config.target === "local" ? [["POST", /^\/api\/auth\/(signup|setup)$/] as [string, RegExp]] : []),
+  // against a stand-in, never staging or live.
+  ...(signUpAllowed ? [["POST", /^\/api\/auth\/(signup|setup)$/] as [string, RegExp]] : []),
 ];
 
 function recordViolation(g: Guard, testInfo: TestInfo, message: string) {

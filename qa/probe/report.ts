@@ -99,6 +99,8 @@ export function renderProbeMarkdown(s: ProbeSummary): string {
         : `Planned by ${s.probe.model}: ${s.probe.tokens.input} input and ${s.probe.tokens.output} output tokens, about $${s.probe.approxCostUsd.toFixed(4)}. ${s.probe.readOnly ? "Read-only on this host." : "Writes allowed on this host."}`,
     );
   }
+  if (s.probe?.calls !== undefined) lines.push("", `Model calls: ${s.probe.calls}, plus ${s.probe.cachedCalls ?? 0} answered from the cache.`);
+  for (const line of s.probe?.limits ?? []) lines.push("", `> ${line}`);
   for (const e of s.globalErrors) lines.push("", `! ${e}`);
   if (s.notRun) lines.push("", `> ${s.notRun}`);
   for (const j of s.journeys) {
@@ -106,6 +108,10 @@ export function renderProbeMarkdown(s: ProbeSummary): string {
     for (const step of j.steps) lines.push(`- ${step.status}: ${step.title}${step.reason ? ` (${step.reason})` : ""}`);
     if (j.image) lines.push("", `Image: [Image ${j.image}](images/${j.image}.jpg)`);
     else if (j.imageNote) lines.push("", `Image: ${j.imageNote}`);
+  }
+  if (s.probe?.pages?.length) {
+    lines.push("", `## Pages explored (${s.probe.pages.length})`, "");
+    for (const p of s.probe.pages) lines.push(`- ${p.page}${p.example !== p.page ? ` (${p.example})` : ""}: ${p.journeys.length ? p.journeys.join("; ") : p.note ?? "no journey"}`);
   }
   for (const w of s.warnings) lines.push("", `Note: ${w.message}`);
   return `${lines.join("\n")}\n`;

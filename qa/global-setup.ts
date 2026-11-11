@@ -31,8 +31,12 @@ export default async function globalSetup() {
     try {
       const res = await fetch(new URL("/api/health", config.baseURL), { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
-        const health = await res.json();
-        writeFileSync(path.join(config.resultsDir, "environment.json"), JSON.stringify(health, null, 2));
+        // A deployed copy of the stand-in keeps its AI mode and store at
+        // /api/environment instead. A site without it adds nothing.
+        const environment = await fetch(new URL("/api/environment", config.baseURL), { signal: AbortSignal.timeout(5000) })
+          .then((r) => (r.ok ? r.json() : {}))
+          .catch(() => ({}));
+        writeFileSync(path.join(config.resultsDir, "environment.json"), JSON.stringify({ ...(await res.json()), ...environment }, null, 2));
         return;
       }
       lastError = `HTTP ${res.status}`;

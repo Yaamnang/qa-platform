@@ -9,7 +9,9 @@
  * arguments, and its exit code is passed on. Any other site gets the AI Probe:
  *
  *  1. A recorded plan (PROBE_PLAN_IN or --plan) is replayed with no model call.
- *     Otherwise Claude Haiku plans 3 to 6 journeys from a few screens (plan.ts).
+ *     Otherwise the Probe signs in, explores every page it can reach
+ *     (pages.ts) and Claude Haiku plans journeys for them in batches (plan.ts).
+ *     Limits are in limits.ts.
  *     Neither a key nor a plan: stop with a clear message.
  *  2. execute.ts runs every step with Playwright and checks its outcome. The
  *     verdict comes only from those checks.
@@ -26,18 +28,18 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { pathOf, settle, type Credentials } from "../explore/crawl";
+import type { Credentials } from "../explore/crawl";
 import { redact, secretsToRedact } from "../explore/redact";
 import { linked, say } from "../lib/console-link";
-import { liveAction } from "../lib/live-view";
 import { hasAnthropicKey, isStandIn, NO_KEY_NO_PLAN } from "./detect";
 import { runJourneys } from "./execute";
-import { approxCost, PlanError, planJourneys, PROBE_MODEL, samePath } from "./plan";
+import { MAX_JOURNEYS, MAX_MINUTES, MAX_STEPS_TOTAL, MAX_TOKENS } from "./limits";
+import { explorePages } from "./pages";
+import { approxCost, planFirstPages, planSite, PROBE_MODEL, samePath } from "./plan";
 import { imageTag } from "../reporter/plain-report";
 import { buildSummary, writeSummary } from "./report";
 import { openProbeSession } from "./session";
-import { readScreenOf, type Screen } from "./snapshot";
-import type { ProbeInfo, ProbeJourney, ProbePlan } from "./types";
+import type { ExploredPage, ProbeInfo, ProbeJourney, ProbePlan } from "./types";
 
 const ROOT = process.cwd();
 const TSX_CLI = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
@@ -80,45 +82,16 @@ function readPlan(file: string | undefined, origin: string): ProbePlan | null {
   }
 }
 
-/** A few screens for the planner: where the visitor lands, after sign-in if asked, and up to three linked pages. */
-async function lookAround(session: Awaited<ReturnType<typeof openProbeSession>>, origin: string): Promise<Screen[]> {
-  const { page, gate } = session;
-  const screens: Screen[] = [];
-  const add = async () => {
-    await settle(page);
-    const screen = await readScreenOf(page);
-    if (!screens.some((s) => s.path === screen.path)) screens.push(screen);
-    return screen;
-  };
-  let first = await add();
-  if (await gate.maybeSignIn(page)) first = await add();
-  const links = first.controls
-    .filter((c) => c.role === "link" && c.href && c.href !== "external" && !c.downloads)
-    .map((c) => samePath(c.href!, origin))
-    .filter((p): p is string => !!p && !screens.some((s) => s.path === p));
-  for (const link of [...new Set(links)].slice(0, 3)) {
-    try {
-      await liveAction(page, `Opening ${link}`);
-      await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 });
-      await settle(page);
-      await gate.maybeSignIn(page);
-      log(`     looked at ${pathOf(page)}`);
-      await add();
-    } catch {
-      // A page that does not load is simply not planned from.
-    }
-  }
-  return screens;
-}
-
 async function aiProbe(target: string): Promise<number> {
   const startedAt = new Date();
   const runId = `${startedAt.toISOString().replace(/[-:]/g, "").replace(/\..+/, "")}-${randomBytes(2).toString("hex")}`;
   const origin = new URL(target).origin;
   const start = samePath(new URL(target).pathname || "/", origin) ?? "/";
   const readOnly = process.env.PROBE_WRITES_ALLOWED !== "1";
-  const maxSteps = Number(process.env.PROBE_MAX_STEPS) || 40;
-  const maxTokens = Number(process.env.PROBE_MAX_TOKENS) || 30_000;
+  // The console still passes PROBE_MAX_STEPS and PROBE_MAX_TOKENS through (lib/console/server/probe.ts); the limits live in limits.ts.
+  const maxSteps = Number(process.env.PROBE_MAX_STEPS) || MAX_STEPS_TOTAL;
+  const maxTokens = Number(process.env.PROBE_MAX_TOKENS) || MAX_TOKENS;
+  const deadline = startedAt.getTime() + MAX_MINUTES * 60_000;
   const workDir = process.env.PROBE_DIR || path.join(ROOT, "qa-results", runId);
   mkdirSync(workDir, { recursive: true });
   const notes: string[] = [];
@@ -165,7 +138,7 @@ async function aiProbe(target: string): Promise<number> {
   const mode: ProbeInfo["mode"] = recorded ? "recorded" : "planned";
   const intro = recorded
     ? `Using recorded plan (${recorded.journeys.length} journeys)`
-    : `Planning with Claude Haiku (${PROBE_MODEL})`;
+    : `Exploring every page I can reach, then planning with Claude Haiku (${PROBE_MODEL})`;
   log(`• ${intro}. ${readOnly ? "Read-only on this host: anything that would change data is skipped." : "Writes are allowed on this host."}`);
   await say(`${intro}. ${readOnly ? "Read-only on this host." : "Writes allowed on this host."}`, "start");
 
@@ -179,24 +152,59 @@ async function aiProbe(target: string): Promise<number> {
   try {
     let journeys: ProbeJourney[];
     let tokens = { input: 0, output: 0 };
+    let calls = 0;
+    let cachedCalls = 0;
+    let pages: ExploredPage[] | undefined = recorded?.pages;
+    const limits: string[] = [];
     if (recorded) {
       journeys = recorded.journeys;
     } else {
-      log("• Looking at a few pages before planning…");
-      const screens = await lookAround(session, origin);
+      log("• Exploring every page I can reach…");
+      const site = await explorePages({ session, origin, start, log, notes });
+      log(`• Explored ${site.pages.length} page patterns (${site.opened} pages opened). Stopped because ${site.stoppedBecause}.`);
+      if (site.notVisited.length) limits.push(`Stopped exploring: ${site.stoppedBecause}. Not visited: ${site.notVisited.slice(0, 10).join(", ")}${site.notVisited.length > 10 ? ` and ${site.notVisited.length - 10} more` : ""}`);
+      let plan: Awaited<ReturnType<typeof planSite>> | null = null;
       try {
-        const planned = await planJourneys({ origin, screens, secrets: secrets(), maxSteps, maxTokens });
-        journeys = planned.journeys;
-        tokens = planned.tokens;
-        log(`• ${PROBE_MODEL} proposed ${journeys.length} journeys${planned.cached ? " (from the cache, no charge)" : ""}.`);
+        plan = await planSite({ origin, pages: site.pages, secrets: secrets(), readOnly, maxJourneys: MAX_JOURNEYS, maxSteps, maxTokens, log });
       } catch (error) {
-        if (error instanceof PlanError) return await finish([], null, [error.message]);
-        throw error;
+        log(`• Batch planning failed: ${redact((error as Error).message.split("\n")[0], secrets())}`);
+      }
+      journeys = plan?.journeys ?? [];
+      if (plan) {
+        tokens = plan.tokens;
+        calls = plan.calls;
+        cachedCalls = plan.cachedCalls;
+        pages = plan.pages;
+        limits.push(...plan.limits);
+      }
+      if (!journeys.length && site.pages.length && !plan?.fatal) {
+        // Safety net: the way the Probe planned before, one call over the first pages.
+        await say("Planning page by page gave nothing to run, so I am planning once over the first pages instead.", "step");
+        try {
+          const fallback = await planFirstPages({ origin, pages: site.pages, secrets: secrets(), readOnly });
+          journeys = fallback.journeys;
+          tokens = { input: tokens.input + fallback.tokens.input, output: tokens.output + fallback.tokens.output };
+          calls++;
+        } catch (error) {
+          log(`• The single planning call failed too: ${redact((error as Error).message.split("\n")[0], secrets())}`);
+        }
+      }
+      if (!journeys.length) {
+        const why = plan?.fatal ?? (site.pages.length ? "No journeys could be planned for this site." : "No page could be explored on this site.");
+        for (const line of limits) log(`• ${line}`);
+        return await finish([], null, [why]);
+      }
+      const line = `Explored ${site.pages.length} pages. Planned ${journeys.length} journeys.`;
+      log(`• ${line}${cachedCalls ? ` ${cachedCalls} batch(es) came from the cache, no charge.` : ""}`);
+      await say(line, "step");
+      for (const limit of limits) {
+        log(`• ${limit}`);
+        await say(limit, "step");
       }
     }
 
-    const { results, recorded: executed } = await runJourneys(
-      { session, origin, readOnly, calibrate: !recorded, workDir, imagesDir: path.join(ROOT, "qa-results", runId, "images"), secrets, log, notes },
+    const { results, recorded: executed, notRun } = await runJourneys(
+      { session, origin, readOnly, calibrate: !recorded, deadline, workDir, imagesDir: path.join(ROOT, "qa-results", runId, "images"), secrets, log, notes },
       journeys,
     );
 
@@ -208,12 +216,25 @@ async function aiProbe(target: string): Promise<number> {
       tokens,
       approxCostUsd: approxCost(tokens),
       readOnly,
+      calls,
+      cachedCalls,
+      pages: pages && coverage(pages, executed),
+      limits,
     };
+    if (notRun.length) {
+      const line = `Stopped at the time limit of ${MAX_MINUTES} minutes. Not run: ${notRun.join(", ")}`;
+      limits.push(line);
+      await say(line, "step");
+    }
 
     // Record what actually ran, so the next Probe replays it without a model. Values are fake test data, redacted anyway.
     const out = process.env.PROBE_PLAN_OUT;
     if (!recorded && out && executed.length) {
-      const plan: ProbePlan = { version: 1, origin, model: PROBE_MODEL, createdAt: new Date().toISOString(), journeys: JSON.parse(redact(JSON.stringify(executed), secrets())) };
+      const plan: ProbePlan = {
+        version: 1, origin, model: PROBE_MODEL, createdAt: new Date().toISOString(),
+        journeys: JSON.parse(redact(JSON.stringify(executed), secrets())),
+        ...(probe.pages ? { pages: probe.pages } : {}),
+      };
       writeFileSync(out, JSON.stringify(plan, null, 2));
       log(`• Recorded ${executed.length} journeys. The next Probe replays them with no model calls.`);
     }
@@ -221,6 +242,15 @@ async function aiProbe(target: string): Promise<number> {
   } finally {
     await session.close();
   }
+}
+
+/** The pages with the journeys that actually ran on them. A planning run drops journeys whose elements were not there. */
+function coverage(pages: ExploredPage[], ran: ProbeJourney[]): ExploredPage[] {
+  return pages.map((p) => {
+    const names = ran.filter((j) => j.page === p.page).map((j) => j.name);
+    if (names.length) return { page: p.page, example: p.example, journeys: names };
+    return { page: p.page, example: p.example, journeys: [], note: p.journeys.length ? "planned journeys did not fit the page and were dropped" : p.note ?? "no journey" };
+  });
 }
 
 async function main(): Promise<number> {
